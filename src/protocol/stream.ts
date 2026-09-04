@@ -108,6 +108,7 @@ class TurnWriter {
   constructor(
     private readonly model: Model<Api>,
     private readonly stream: AssistantMessageEventStream,
+    private readonly onClosed?: () => void,
   ) {
     this.output = {
       role: "assistant",
@@ -152,8 +153,9 @@ class TurnWriter {
   setInputTokens(tokens: number): void {
     // A 0-token checkpoint is a keep-alive, not a real measurement.
     if (tokens <= 0) return;
-    // Cursor sometimes sends a smaller follow-up checkpoint; never let usage
-    // jump backwards on the same turn (that flashes the footer down).
+    // Treat usedTokens as prompt size (input). tokenDelta is counted separately
+    // as output. If a checkpoint already includes generation tokens, totalTokens
+    // over-counts — we still refuse to jump backwards on the same turn.
     if (tokens < this.output.usage.input) return;
     this.output.usage.input = tokens;
     if (this.pendingOutputTokens > 0) {
@@ -194,13 +196,14 @@ class TurnWriter {
 
   finish(reason: StopReason, errorMessage?: string): void {
     if (this.finalized) return;
+    this.finalized = true;
+    this.onClosed?.();
     const flushed = this.parser.flush();
     if (flushed.reasoning) this.appendThinking(flushed.reasoning);
     if (flushed.content) this.appendText(flushed.content);
     this.closeThinking();
     this.closeText();
     this.flushPendingOutput();
-    this.finalized = true;
     this.output.stopReason = reason;
     if (errorMessage) this.output.errorMessage = errorMessage;
     this.output.usage.cost = usageCost(this.model, this.output.usage);
@@ -341,7 +344,6 @@ function parkBridge(state: RunState): void {
   const bridge = state.bridge;
   if (bridge) {
     bridge.pausedAt = Date.now();
-    bridge.sink = null;
     startHeartbeat(bridge);
   }
   state.writer = null;
@@ -500,15 +502,16 @@ export function streamCursor(
   options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
-  const writer = new TurnWriter(model, stream);
-  // Shared with the abort listener below; assigned once the run state exists.
   let state: RunState | null = null;
-
+  let writer: TurnWriter;
   const abortRun = (): void => {
     if (writer.closed) return;
     if (state) dropBridge(state);
     writer.finish("aborted", "Aborted");
   };
+  writer = new TurnWriter(model, stream, () => {
+    options?.signal?.removeEventListener("abort", abortRun);
+  });
   if (options?.signal) {
     if (options.signal.aborted) {
       writer.finish("aborted", "Aborted");
@@ -606,7 +609,6 @@ function startFresh(
     baseUrl,
     pausedAt: Date.now(),
     heartbeatTimer: null,
-    sink: null,
   };
   state.bridge = bridge;
   storeBridge(conversationId, bridge);
@@ -622,14 +624,8 @@ function startFresh(
   rpc.write(encodeFrame(built.bytes));
 }
 
-function writerActive(state: RunState): boolean {
-  return state.writer !== null && !state.writer.closed;
-}
-void writerActive;
-
 function resumeBridge(state: RunState, parsed: ParsedConversation): void {
   const bridge = state.bridge!;
-  bridge.sink = null;
   bridge.pausedAt = Date.now();
   storeBridge(bridge.conversationId, bridge);
 

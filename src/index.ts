@@ -13,7 +13,7 @@ import { resolveCredential } from "./auth/credentials.js";
 import { registerCursorCommands } from "./commands.js";
 import { shouldCancelThresholdCompact } from "./compaction-guard.js";
 import { cachedModels, startupCatalog, writeCache } from "./models/catalog.js";
-import { clearAllBridges } from "./protocol/bridge.js";
+import { clearAllBridges, clearBridgesForSession } from "./protocol/bridge.js";
 import { discoverModels } from "./models/discovery.js";
 import { processAndRegister, toProviderModels } from "./models/processing.js";
 import type { ProcessedModel } from "./models/types.js";
@@ -104,6 +104,8 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   });
   pi.on("session_compact", (_event, ctx) => {
     if (ctx.model?.provider !== PROVIDER_ID) return;
-    clearAllBridges();
+    const sessionId = ctx.sessionManager.getSessionId()?.trim();
+    if (sessionId) clearBridgesForSession(sessionId);
+    else clearAllBridges();
   });
 }

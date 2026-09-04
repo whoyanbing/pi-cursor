@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BlobStore, MAX_BLOB_BYTES } from "../protocol/blobs.js";
+import { BlobStore, MAX_BLOB_BYTES, MAX_STORE_ENTRIES } from "../protocol/blobs.js";
 
 describe("BlobStore", () => {
   it("addresses content by sha256", () => {
@@ -51,5 +51,18 @@ describe("BlobStore", () => {
     const id = new Uint8Array(32).fill(7);
     expect(store.setFromServer(id, new Uint8Array(MAX_BLOB_BYTES + 1))).toBe(false);
     expect(store.has(id)).toBe(false);
+  });
+
+  it("never evicts client-put blobs when the store overflows", () => {
+    const store = new BlobStore();
+    const keep = store.put(new TextEncoder().encode("keep-me"));
+    for (let i = 0; i < MAX_STORE_ENTRIES + 1; i += 1) {
+      const id = new Uint8Array(32);
+      new DataView(id.buffer).setUint32(0, i);
+      store.setFromServer(id, new Uint8Array([i & 0xff]));
+    }
+    expect(store.has(keep)).toBe(true);
+    expect(store.getByIdBytes(keep)).toEqual(new TextEncoder().encode("keep-me"));
+    expect(store.entries).toBeLessThanOrEqual(MAX_STORE_ENTRIES);
   });
 });

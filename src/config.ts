@@ -105,16 +105,26 @@ export function readCliAgentUrl(): string | undefined {
   }
 }
 
+/** How long a CLI-resolved agent host is reused before re-reading cli-config.json. */
+export const AGENT_URL_TTL_MS = 30_000;
+
+let cachedCliAgentUrl: { url: string | undefined; at: number } | null = null;
+
 export function getAgentUrl(): string {
   const fromEnv =
     normalizeBaseUrl(process.env.PI_CURSOR_AGENT_URL) ??
     normalizeBaseUrl(process.env.CURSOR_AGENT_URL);
   if (fromEnv) return fromEnv;
-  // Re-read the CLI cache each call: Cursor rotates agent hostnames.
-  return readCliAgentUrl() ?? DEFAULT_AGENT_URL;
+  const now = Date.now();
+  if (cachedCliAgentUrl && now - cachedCliAgentUrl.at < AGENT_URL_TTL_MS) {
+    return cachedCliAgentUrl.url ?? DEFAULT_AGENT_URL;
+  }
+  const fromCli = readCliAgentUrl();
+  cachedCliAgentUrl = { url: fromCli, at: now };
+  return fromCli ?? DEFAULT_AGENT_URL;
 }
 
-/** @deprecated URL is resolved on every call; kept for tests and /reload callers. */
+/** Drop the CLI host cache (tests and /reload). Env overrides are never cached. */
 export function resetAgentUrlCache(): void {
-  // no-op
+  cachedCliAgentUrl = null;
 }

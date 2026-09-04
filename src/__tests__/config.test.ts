@@ -100,11 +100,32 @@ describe("getAgentUrl", () => {
     rmSync(configDir, { recursive: true, force: true });
   });
 
-  it("re-resolves each call so a rotated CLI host is picked up", () => {
+  it("re-resolves env overrides on every call", () => {
     process.env.PI_CURSOR_AGENT_URL = "https://cached.example.com";
     expect(getAgentUrl()).toBe("https://cached.example.com");
     delete process.env.PI_CURSOR_AGENT_URL;
     expect(getAgentUrl()).toBe(DEFAULT_AGENT_URL);
+  });
+
+  it("caches the CLI agent URL until reset", () => {
+    const configDir = join(homedir(), ".pi", "agent", "cursor-cli-config-ttl");
+    mkdirSync(configDir, { recursive: true });
+    process.env.CURSOR_CONFIG_DIR = configDir;
+    writeFileSync(
+      join(configDir, "cli-config.json"),
+      JSON.stringify({ serverConfigCache: { agentUrlConfig: { agentnUrl: "https://cli-a.example.com" } } }),
+      "utf8",
+    );
+    expect(getAgentUrl()).toBe("https://cli-a.example.com");
+    writeFileSync(
+      join(configDir, "cli-config.json"),
+      JSON.stringify({ serverConfigCache: { agentUrlConfig: { agentnUrl: "https://cli-b.example.com" } } }),
+      "utf8",
+    );
+    expect(getAgentUrl()).toBe("https://cli-a.example.com");
+    resetAgentUrlCache();
+    expect(getAgentUrl()).toBe("https://cli-b.example.com");
+    rmSync(configDir, { recursive: true, force: true });
   });
 
   it("survives a malformed CLI config", () => {

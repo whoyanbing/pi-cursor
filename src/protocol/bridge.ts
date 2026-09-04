@@ -38,23 +38,6 @@ export interface Bridge {
   baseUrl: string;
   pausedAt: number;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
-  /** Installed by the resumed stream; parked bridges have null. */
-  sink: BridgeSink | null;
-  onSinkEvent?: (event: BridgeEvent) => void;
-}
-
-export type BridgeEvent =
-  | { type: "text"; delta: string }
-  | { type: "thinking"; delta: string }
-  | { type: "tokenDelta"; tokens: number }
-  | { type: "toolCall"; call: PendingExec }
-  | { type: "turnEnded" }
-  | { type: "usage"; usedTokens: number }
-  | { type: "error"; message: string }
-  | { type: "liveness" };
-
-export interface BridgeSink {
-  push(event: BridgeEvent): void;
 }
 
 const bridges = new Map<string, Bridge>();
@@ -79,7 +62,6 @@ export function peekBridge(conversationId: string): Bridge | undefined {
 export function destroyBridge(bridge: Bridge): void {
   if (bridge.heartbeatTimer) clearInterval(bridge.heartbeatTimer);
   bridge.heartbeatTimer = null;
-  bridge.sink = null;
   try {
     bridge.rpc.destroy();
   } catch {
@@ -117,7 +99,23 @@ export function activeBridgeCount(): number {
   return bridges.size;
 }
 
-/** Test helper: destroy and clear every parked bridge. */
+/**
+ * Drop parked Run streams for one Pi session. Conversation ids are
+ * `{sessionId}:{modelId}:{fingerprint}`; other sessions stay parked.
+ */
+export function clearBridgesForSession(sessionId: string): void {
+  const id = sessionId.trim();
+  if (!id) return;
+  const prefix = `${id}:`;
+  for (const [key, bridge] of [...bridges]) {
+    if (key === id || key.startsWith(prefix)) {
+      bridges.delete(key);
+      destroyBridge(bridge);
+    }
+  }
+}
+
+/** Destroy and clear every parked bridge (tests, or when the session id is unknown). */
 export function clearAllBridges(): void {
   for (const bridge of bridges.values()) destroyBridge(bridge);
   bridges.clear();

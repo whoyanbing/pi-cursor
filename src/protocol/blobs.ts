@@ -17,6 +17,8 @@ export class BlobStore {
   private totalBytes = 0;
   /** Insertion-ordered keys, oldest first, for eviction. */
   private readonly order: string[] = [];
+  /** Client-put ids that the current Run request still references. Never evict these. */
+  private readonly pinned = new Set<string>();
   droppedCount = 0;
   droppedBytes = 0;
 
@@ -31,6 +33,7 @@ export class BlobStore {
     }
     const id = new Uint8Array(createHash("sha256").update(data).digest());
     const key = Buffer.from(id).toString("hex");
+    this.pinned.add(key);
     if (!this.blobs.has(key)) {
       this.blobs.set(key, data);
       this.order.push(key);
@@ -75,11 +78,10 @@ export class BlobStore {
   }
 
   private evict(): void {
-    while (
-      (this.totalBytes > MAX_STORE_BYTES || this.order.length > MAX_STORE_ENTRIES) &&
-      this.order.length > 1
-    ) {
-      const key = this.order.shift()!;
+    while (this.totalBytes > MAX_STORE_BYTES || this.order.length > MAX_STORE_ENTRIES) {
+      const index = this.order.findIndex((key) => !this.pinned.has(key));
+      if (index < 0) break;
+      const key = this.order.splice(index, 1)[0];
       const blob = this.blobs.get(key);
       if (blob) {
         this.totalBytes -= blob.byteLength;
