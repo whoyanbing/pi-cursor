@@ -23,6 +23,7 @@ import { clearAllBridges, peekBridge } from "../protocol/bridge.js";
 import { encodeArgs } from "../protocol/request.js";
 import { streamCursor } from "../protocol/stream.js";
 import { buildConversationId } from "../protocol/conversation-id.js";
+import { clearAllUsage } from "../protocol/usage.js";
 import { parseConversation } from "../protocol/context.js";
 
 // ── Fake transport ───────────────────────────────────────────────────────────
@@ -322,10 +323,12 @@ beforeEach(() => {
   transport.nextEnd = null;
   transport.failOpen = null;
   clearAllBridges();
+  clearAllUsage();
 });
 
 afterEach(() => {
   clearAllBridges();
+  clearAllUsage();
   vi.clearAllMocks();
 });
 
@@ -404,7 +407,7 @@ describe("streamCursor", () => {
     ]);
   });
 
-  it("does not publish output-only usage without a prompt-size checkpoint", async () => {
+  it("publishes estimated usage when no prompt-size checkpoint arrives", async () => {
     const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("hi")]), { apiKey: "t", sessionId }));
     const stream = lastStream();
     stream.text("x");
@@ -413,12 +416,12 @@ describe("streamCursor", () => {
     stream.turnEnded();
 
     const message = doneMessage(await eventsPromise);
-    expect(message.usage.input).toBe(0);
-    expect(message.usage.output).toBe(0);
-    expect(message.usage.totalTokens).toBe(0);
+    expect(message.usage.input).toBeGreaterThan(0);
+    expect(message.usage.output).toBe(18);
+    expect(message.usage.totalTokens).toBe(message.usage.input + 18);
   });
 
-  it("does not publish output usage until a prompt-size checkpoint arrives", async () => {
+  it("starts with estimated usage and replaces it when a checkpoint arrives", async () => {
     const events: AssistantMessageEvent[] = [];
     const eventsPromise = (async () => {
       for await (const event of streamCursor(makeModel(), makeContext([user("hi")]), { apiKey: "t", sessionId })) {
@@ -431,9 +434,9 @@ describe("streamCursor", () => {
     stream.tokens(11);
     await vi.waitFor(() => expect(events.some((event) => event.type === "text_delta")).toBe(true));
     const before = events.filter((event) => event.type === "text_delta").at(-1) as { partial: AssistantMessage };
-    expect(before.partial.usage.input).toBe(0);
-    expect(before.partial.usage.output).toBe(0);
-    expect(before.partial.usage.totalTokens).toBe(0);
+    expect(before.partial.usage.input).toBeGreaterThan(0);
+    expect(before.partial.usage.output).toBe(11);
+    expect(before.partial.usage.totalTokens).toBe(before.partial.usage.input + 11);
 
     stream.usage(80_000);
     stream.tokens(7);
@@ -449,6 +452,81 @@ describe("streamCursor", () => {
     expect(message.usage.input).toBe(80_000);
     expect(message.usage.output).toBe(18);
     expect(message.usage.totalTokens).toBe(80_018);
+  });
+
+  it("rejects a one-off large checkpoint drop in the same conversation", async () => {
+    const first = collect(streamCursor(makeModel(), makeContext([user("hi")]), { apiKey: "t", sessionId }));
+    const firstStream = lastStream();
+    firstStream.usage(180_000);
+    firstStream.text("first");
+    firstStream.turnEnded();
+    expect(doneMessage(await first).usage.input).toBe(180_000);
+
+    const secondContext = makeContext([
+      user("hi"),
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "first" }],
+        api: "cursor-native",
+        provider: "cursor",
+        model: "gpt-5",
+        usage: { input: 180_000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 180_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: "stop",
+        timestamp: Date.now(),
+      } as never,
+      user("next"),
+    ]);
+    const second = collect(streamCursor(makeModel(), secondContext, { apiKey: "t", sessionId }));
+    const secondStream = lastStream();
+    secondStream.usage(17_000);
+    secondStream.text("second");
+    secondStream.turnEnded();
+    expect(doneMessage(await second).usage.input).toBe(180_000);
+  });
+
+  it("accepts a low checkpoint after compaction rotates the conversation", async () => {
+    const before = collect(streamCursor(makeModel(), makeContext([user("original")]), { apiKey: "t", sessionId }));
+    lastStream().usage(180_000);
+    lastStream().turnEnded();
+    await before;
+
+    const compacted = makeContext([
+      { role: "compactionSummary", summary: "short summary", timestamp: Date.now() } as never,
+      user("continue"),
+    ]);
+    const after = collect(streamCursor(makeModel(), compacted, { apiKey: "t", sessionId }));
+    lastStream().usage(20_000);
+    lastStream().text("ok");
+    lastStream().turnEnded();
+    expect(doneMessage(await after).usage.input).toBe(20_000);
+  });
+
+  it("uses a low estimate after compaction when the first sub-turn has no checkpoint", async () => {
+    const compactedAt = Date.now();
+    const compacted = makeContext([
+      {
+        role: "user",
+        content: "The conversation history before this point was compacted into the following summary:\n\n<summary>\nshort\n</summary>",
+        timestamp: compactedAt,
+      } as never,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "kept old response" }],
+        api: "cursor-native",
+        provider: "cursor",
+        model: "gpt-5",
+        usage: { input: 180_000, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 180_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: "stop",
+        timestamp: compactedAt - 1,
+      } as never,
+      user("continue"),
+    ]);
+    const result = collect(streamCursor(makeModel(), compacted, { apiKey: "t", sessionId }));
+    lastStream().text("working");
+    lastStream().turnEnded();
+    const message = doneMessage(await result);
+    expect(message.usage.input).toBeGreaterThan(0);
+    expect(message.usage.input).toBeLessThan(100_000);
   });
 
   it("answers a KV blob request from the store", async () => {
@@ -500,7 +578,7 @@ describe("streamCursor", () => {
     expect([...bridge!.pendingExecs.keys()]).toEqual(["call_1"]);
   });
 
-  it("keeps usage empty on toolUse until a prompt-size checkpoint arrives", async () => {
+  it("keeps estimated usage visible on toolUse without a checkpoint", async () => {
     const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("run ls")]), { apiKey: "t", sessionId }));
     const stream = lastStream();
     stream.tokens(11);
@@ -509,9 +587,9 @@ describe("streamCursor", () => {
 
     const message = doneMessage(await eventsPromise);
     expect(message.stopReason).toBe("toolUse");
-    expect(message.usage.input).toBe(0);
-    expect(message.usage.output).toBe(0);
-    expect(message.usage.totalTokens).toBe(0);
+    expect(message.usage.input).toBeGreaterThan(0);
+    expect(message.usage.output).toBe(11);
+    expect(message.usage.totalTokens).toBe(message.usage.input + 11);
   });
 
   it("resumes a parked bridge with the tool result inline", async () => {

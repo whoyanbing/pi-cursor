@@ -60,6 +60,12 @@ import { buildRunRequest, type ModelRouting } from "./request.js";
 import { handleServerMessage, type ServerHandlers } from "./server.js";
 import { ThinkingTagParser } from "./thinking.js";
 import { buildToolDefinitions } from "./tools.js";
+import {
+  cachedInputTokens,
+  contextInputTokens,
+  estimatePromptTokens,
+  stabilizeInputTokens,
+} from "./usage.js";
 
 function emptyUsage(): AssistantMessage["usage"] {
   return {
@@ -102,7 +108,8 @@ class TurnWriter {
   private started = false;
   private finalized = false;
   private emittedContent = false;
-  /** Output deltas held until a real prompt-size checkpoint arrives. */
+  private hasPromptCheckpoint = false;
+  /** Output deltas held until either a fallback seed or a real checkpoint arrives. */
   private pendingOutputTokens = 0;
 
   constructor(
@@ -137,6 +144,14 @@ class TurnWriter {
     this.output.usage.cost = usageCost(this.model, this.output.usage);
   }
 
+  /** Seed a visible, non-zero usage while Cursor has not sent a checkpoint. */
+  seedInputTokens(tokens: number): void {
+    if (tokens <= 0 || this.output.usage.input > 0) return;
+    this.setUsage(tokens, 0);
+    this.flushPendingOutput();
+    this.ensureStart();
+  }
+
   addOutputTokens(tokens: number): void {
     if (tokens <= 0) return;
     // Pi's footer treats the latest assistant `usage.totalTokens` as context
@@ -153,10 +168,10 @@ class TurnWriter {
   setInputTokens(tokens: number): void {
     // A 0-token checkpoint is a keep-alive, not a real measurement.
     if (tokens <= 0) return;
-    // Treat usedTokens as prompt size (input). tokenDelta is counted separately
-    // as output. If a checkpoint already includes generation tokens, totalTokens
-    // over-counts — we still refuse to jump backwards on the same turn.
-    if (tokens < this.output.usage.input) return;
+    // The first real checkpoint replaces the fallback estimate even if smaller.
+    // Later checkpoints on the same turn must remain monotonic.
+    if (this.hasPromptCheckpoint && tokens < this.output.usage.input) return;
+    this.hasPromptCheckpoint = true;
     this.output.usage.input = tokens;
     if (this.pendingOutputTokens > 0) {
       this.output.usage.output += this.pendingOutputTokens;
@@ -447,7 +462,8 @@ function makeHandlers(state: RunState): ServerHandlers {
     },
     onUsage(usedTokens) {
       markWork();
-      state.writer?.setInputTokens(usedTokens);
+      const stable = stabilizeInputTokens(bridge.conversationId, usedTokens);
+      state.writer?.setInputTokens(stable);
     },
     onTurnEnded() {
       markWork();
@@ -525,6 +541,13 @@ export function streamCursor(
       const parsed = parseConversation(context);
       const toolDefinitions = buildToolDefinitions(context.tools);
       const conversationId = stableConversationId(options, parsed, model.id);
+      const priorInput = contextInputTokens(context, model);
+      if (priorInput > 0) stabilizeInputTokens(conversationId, priorInput);
+      const initialInput = Math.max(
+        cachedInputTokens(conversationId),
+        estimatePromptTokens(model, context),
+      );
+      writer.seedInputTokens(initialInput);
       const token = options?.apiKey?.trim() || (await resolveAccessToken());
       if (writer.closed) return;
       if (!token) {

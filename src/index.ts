@@ -18,8 +18,21 @@ import { discoverModels } from "./models/discovery.js";
 import { processAndRegister, toProviderModels } from "./models/processing.js";
 import type { ProcessedModel } from "./models/types.js";
 import { streamCursor } from "./protocol/stream.js";
+import { clearAllUsage, clearUsageForSession, estimatePromptTokens } from "./protocol/usage.js";
 
+const COMPACT_CONTEXT_STATUS = "pi-cursor-compact-context";
 let lastRegisteredModels: ProcessedModel[] = [];
+
+function clearSessionRuntime(sessionId: string | undefined): void {
+  const id = sessionId?.trim();
+  if (id) {
+    clearBridgesForSession(id);
+    clearUsageForSession(id);
+  } else {
+    clearAllBridges();
+    clearAllUsage();
+  }
+}
 
 function registerCursorApi(): void {
   registerApiProvider(
@@ -103,9 +116,63 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     if (shouldCancelThresholdCompact(event, ctx.model?.provider)) return { cancel: true };
   });
   pi.on("session_compact", (_event, ctx) => {
+    ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
     if (ctx.model?.provider !== PROVIDER_ID) return;
-    const sessionId = ctx.sessionManager.getSessionId()?.trim();
-    if (sessionId) clearBridgesForSession(sessionId);
-    else clearAllBridges();
+    clearSessionRuntime(ctx.sessionManager.getSessionId());
+
+    // Pi deliberately reports context as unknown between compaction and the
+    // first persisted assistant usage. Show a temporary provider-side estimate
+    // in the footer, then remove it after that first sub-turn completes.
+    const messages = ctx.sessionManager.buildContextEntries().flatMap((entry) => {
+      if (entry.type === "message") return [entry.message];
+      const timestamp = Date.parse(entry.timestamp);
+      if (entry.type === "compaction") {
+        return [{ role: "compactionSummary" as const, summary: entry.summary, tokensBefore: entry.tokensBefore, timestamp }];
+      }
+      if (entry.type === "branch_summary") {
+        return [{ role: "branchSummary" as const, summary: entry.summary, fromId: entry.fromId, timestamp }];
+      }
+      if (entry.type === "custom_message") {
+        return [{
+          role: "custom" as const,
+          customType: entry.customType,
+          content: entry.content,
+          display: entry.display,
+          details: entry.details,
+          timestamp,
+        }];
+      }
+      return [];
+    });
+    const tokens = estimatePromptTokens(ctx.model, {
+      systemPrompt: ctx.getSystemPrompt(),
+      messages: messages as never,
+      tools: [],
+    });
+    const window = ctx.model.contextWindow;
+    if (tokens > 0 && window > 0) {
+      ctx.ui.setStatus(
+        COMPACT_CONTEXT_STATUS,
+        `Cursor context ~${((tokens / window) * 100).toFixed(1)}% after compact`,
+      );
+    }
+  });
+  pi.on("turn_end", (event, ctx) => {
+    if (event.message.role !== "assistant") return;
+    if (event.message.stopReason === "error" || event.message.stopReason === "aborted") return;
+    const usage = event.message.usage;
+    if ((usage.totalTokens ?? 0) <= 0) return;
+    ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
+  });
+  pi.on("session_tree", (_event, ctx) => {
+    ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
+    clearSessionRuntime(ctx.sessionManager.getSessionId());
+  });
+  pi.on("model_select", (_event, ctx) => {
+    ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
+  });
+  pi.on("session_shutdown", (_event, ctx) => {
+    ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
+    clearSessionRuntime(ctx.sessionManager.getSessionId());
   });
 }

@@ -102,11 +102,52 @@ describe("extension registration", () => {
 
     expect(pi.on).toHaveBeenCalledWith("session_before_compact", expect.any(Function));
     expect(pi.on).toHaveBeenCalledWith("session_compact", expect.any(Function));
+    expect(pi.on).toHaveBeenCalledWith("turn_end", expect.any(Function));
+    expect(pi.on).toHaveBeenCalledWith("session_tree", expect.any(Function));
+    expect(pi.on).toHaveBeenCalledWith("model_select", expect.any(Function));
+    expect(pi.on).toHaveBeenCalledWith("session_shutdown", expect.any(Function));
 
     // The api registry resolves streamSimple for cursor-native models.
     expect(getApiProvider("cursor-native")).toBeDefined();
     const model = { id: "gpt-5", api: "cursor-native", provider: "cursor" } as never;
     expect(() => streamSimple(model, { systemPrompt: "", messages: [] })).not.toThrow(/No API provider registered/);
+  });
+
+  it("shows an estimated context status after compact and clears it after a turn", async () => {
+    unregisterApiProviders("pi-cursor");
+    const pi = makePi();
+    const { default: activate } = await import("../index.js");
+    await activate(pi as never);
+
+    const handler = (name: string): ((event: unknown, ctx: unknown) => void) => {
+      const call = pi.on.mock.calls.find(([event]) => event === name);
+      if (!call) throw new Error(`missing ${name} handler`);
+      return call[1] as (event: unknown, ctx: unknown) => void;
+    };
+    const setStatus = vi.fn();
+    const ctx = {
+      model: { id: "gpt-5", provider: "cursor", api: "cursor-native", contextWindow: 256_000 },
+      getSystemPrompt: () => "system rules",
+      sessionManager: { getSessionId: () => "session-1", buildContextEntries: () => [] },
+      ui: { setStatus },
+    };
+
+    handler("session_compact")({}, ctx);
+    expect(setStatus).toHaveBeenCalledWith(
+      "pi-cursor-compact-context",
+      expect.stringMatching(/^Cursor context ~\d+\.\d% after compact$/),
+    );
+
+    handler("turn_end")(
+      {
+        message: {
+          role: "assistant",
+          usage: { totalTokens: 20_000 },
+        },
+      },
+      ctx,
+    );
+    expect(setStatus).toHaveBeenLastCalledWith("pi-cursor-compact-context", undefined);
   });
 
   it("refreshModels stays offline-safe without network or credentials", async () => {
