@@ -1,0 +1,42 @@
+import { describe, expect, it } from "vitest";
+import { BlobStore } from "../protocol/blobs.js";
+
+describe("BlobStore", () => {
+  it("addresses content by sha256", () => {
+    const store = new BlobStore();
+    const data = new TextEncoder().encode("payload");
+    const id = store.put(data);
+    expect(id).toHaveLength(32);
+    expect(store.getByIdBytes(id)).toEqual(data);
+    expect(store.has(id)).toBe(true);
+  });
+
+  it("dedupes identical content", () => {
+    const store = new BlobStore();
+    const data = new TextEncoder().encode("same");
+    const a = store.put(data);
+    const b = store.put(data);
+    expect(Buffer.from(a).toString("hex")).toBe(Buffer.from(b).toString("hex"));
+    expect(store.entries).toBe(1);
+  });
+
+  it("accepts server-pushed blobs", () => {
+    const store = new BlobStore();
+    const id = new Uint8Array(32).fill(1);
+    expect(store.setFromServer(id, new Uint8Array([5]))).toBe(true);
+    expect(store.getByIdBytes(id)).toEqual(new Uint8Array([5]));
+  });
+
+  it("returns unknown ids as undefined", () => {
+    const store = new BlobStore();
+    expect(store.getByIdBytes(new Uint8Array(32))).toBeUndefined();
+  });
+
+  it("tracks byte totals", () => {
+    const store = new BlobStore();
+    store.put(new Uint8Array(10));
+    store.put(new Uint8Array(20));
+    expect(store.bytes).toBe(30);
+    expect(store.entries).toBe(2);
+  });
+});
