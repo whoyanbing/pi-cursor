@@ -27,6 +27,9 @@ Key design decisions:
   This extension rebuilds that history from Pi's context on every turn — the system prompt
   rides a `<rules>`-framed user message, and completed turns replay as
   user / assistant(tool-call) / tool(tool-result) messages.
+  After Pi compaction the conversation id rotates (first-prompt fingerprint) so Cursor
+  does not keep the pre-compact transcript; otherwise context stays at ~94% and compact
+  loops.
 - **Live bridge for tool calls.** When the model invokes an MCP tool mid-turn, the Run stream
   is *parked* (not closed) while Pi executes the tool. The next call answers the pending exec
   inline on the same stream and the turn continues — no conversation rebuild, no synthetic

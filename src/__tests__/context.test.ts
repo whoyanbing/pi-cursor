@@ -103,6 +103,23 @@ describe("parseConversation", () => {
     expect(parsed.completedTurns[0].steps).toHaveLength(0);
   });
 
+  it("treats a compaction summary as a user-like turn", () => {
+    const parsed = parseConversation({
+      systemPrompt: "sys",
+      messages: [
+        {
+          role: "compactionSummary",
+          summary: "## Goal\nShip the feature",
+          timestamp: Date.now(),
+        } as never,
+        user("continue"),
+      ],
+    });
+    expect(parsed.completedTurns).toHaveLength(1);
+    expect(parsed.completedTurns[0].userText).toContain("Ship the feature");
+    expect(parsed.action).toMatchObject({ kind: "userMessage", text: "continue" });
+  });
+
   it("keeps error flags on tool results", () => {
     const parsed = parseConversation({
       systemPrompt: "",

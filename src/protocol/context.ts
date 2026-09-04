@@ -81,6 +81,35 @@ function decodeBase64(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value.replace(/\s/g, ""), "base64"));
 }
 
+function messageRole(message: { role: string }): string {
+  return message.role;
+}
+
+function isUserLikeRole(role: string): boolean {
+  return (
+    role === "user" ||
+    role === "compactionSummary" ||
+    role === "branchSummary" ||
+    role === "custom" ||
+    role === "bashExecution"
+  );
+}
+
+function userLikeText(message: Message): string {
+  const record = message as unknown as {
+    summary?: unknown;
+    command?: unknown;
+    output?: unknown;
+    content?: string | (TextContent | ImageContent)[];
+  };
+  if (typeof record.summary === "string" && record.summary) return record.summary;
+  if (typeof record.command === "string") {
+    const body = typeof record.output === "string" && record.output ? `\n${record.output}` : "";
+    return `Ran \`${record.command}\`${body}`;
+  }
+  return textFromContent(record.content);
+}
+
 function findPendingToolCall(turns: ParsedTurn[], toolCallId: string): Extract<TurnStep, { kind: "toolCall" }> | undefined {
   for (let i = turns.length - 1; i >= 0; i -= 1) {
     const steps = turns[i].steps;
@@ -107,9 +136,18 @@ export function parseConversation(context: Context): ParsedConversation {
 
   const messages: Message[] = context.messages ?? [];
   for (const message of messages) {
-    if (message.role === "user") {
-      // A new user message closes the previous turn.
-      current = { userText: textFromContent(message.content), userImages: imagesFromContent(message.content), steps: [] };
+    const role = messageRole(message);
+    if (isUserLikeRole(role)) {
+      // A new user-like message (including Pi compaction summaries) closes the previous turn.
+      if (message.role === "user") {
+        current = {
+          userText: textFromContent(message.content),
+          userImages: imagesFromContent(message.content),
+          steps: [],
+        };
+      } else {
+        current = { userText: userLikeText(message), userImages: [], steps: [] };
+      }
       turns.push(current);
       continue;
     }
@@ -135,6 +173,8 @@ export function parseConversation(context: Context): ParsedConversation {
       continue;
     }
 
+    if (message.role !== "toolResult") continue;
+
     // toolResult
     const step = findPendingToolCall(turns, message.toolCallId);
     const payload: ToolResultPayload = {
@@ -155,7 +195,7 @@ export function parseConversation(context: Context): ParsedConversation {
   }
 
   const last = messages[messages.length - 1];
-  if (!last || last.role === "user") {
+  if (!last || isUserLikeRole(messageRole(last))) {
     const actionTurn = current ?? { userText: "", userImages: [], steps: [] };
     // The trailing user turn is the action, not history.
     const completed = turns.slice(0, -1);

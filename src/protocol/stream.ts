@@ -15,7 +15,7 @@
  * the assistant message, the Pi stream finalizes with `toolUse`, and the Run
  * stream is parked as a bridge for the next call to answer.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type {
   Api,
   AssistantMessage,
@@ -54,6 +54,7 @@ import {
   type PendingExec,
 } from "./bridge.js";
 import { parseConversation, type ImagePart, type ParsedConversation, type ToolResultPayload } from "./context.js";
+import { buildConversationId } from "./conversation-id.js";
 import { encodeExecResult } from "./exec-result.js";
 import { buildRunRequest, type ModelRouting } from "./request.js";
 import { handleServerMessage, type ServerHandlers } from "./server.js";
@@ -476,17 +477,7 @@ function makeHandlers(state: RunState): ServerHandlers {
 }
 
 function stableConversationId(options: SimpleStreamOptions | undefined, parsed: ParsedConversation, modelId: string): string {
-  const session = options?.sessionId?.trim();
-  if (session) return `${session}:${modelId}`;
-  const firstUser =
-    parsed.completedTurns[0]?.userText ?? (parsed.action.kind === "userMessage" ? parsed.action.text : "");
-  const hash = createHash("sha256")
-    .update(parsed.systemPrompt)
-    .update("\0")
-    .update(String(firstUser))
-    .digest("hex")
-    .slice(0, 32);
-  return `pi-${hash}`;
+  return buildConversationId(parsed, modelId, options?.sessionId);
 }
 
 function collectToolResults(parsed: ParsedConversation): Map<string, ToolResultPayload> {

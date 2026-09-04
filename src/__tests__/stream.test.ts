@@ -22,6 +22,8 @@ import type { RpcStream, StreamEndInfo } from "../transport/h2.js";
 import { clearAllBridges, peekBridge } from "../protocol/bridge.js";
 import { encodeArgs } from "../protocol/request.js";
 import { streamCursor } from "../protocol/stream.js";
+import { buildConversationId } from "../protocol/conversation-id.js";
+import { parseConversation } from "../protocol/context.js";
 
 // ── Fake transport ───────────────────────────────────────────────────────────
 
@@ -311,6 +313,10 @@ function lastStream(): FakeStream {
 
 const sessionId = "session-1";
 
+function conversationIdFor(messages: Context["messages"], modelId = "gpt-5"): string {
+  return buildConversationId(parseConversation(makeContext(messages)), modelId, sessionId);
+}
+
 beforeEach(() => {
   transport.streams = [];
   transport.nextEnd = null;
@@ -348,7 +354,9 @@ describe("streamCursor", () => {
     const run = runRequestOf(stream);
     expect(actionTextOf(run)).toBe("do the thing");
     expect(run.requestedModel?.modelId).toBe("gpt-5");
-    expect(run.conversationId).toBe(`${sessionId}:gpt-5`);
+    expect(run.conversationId).toBe(
+      buildConversationId(parseConversation(makeContext([user("do the thing")])), "gpt-5", sessionId),
+    );
     expect(run.mcpTools?.mcpTools[0].toolName).toBe("bash");
     stream.turnEnded();
     await eventsPromise;
@@ -487,7 +495,7 @@ describe("streamCursor", () => {
 
     // The Run stream stays open, parked for the tool result.
     expect(stream.alive).toBe(true);
-    const bridge = peekBridge(`${sessionId}:gpt-5`);
+    const bridge = peekBridge(conversationIdFor([user("run ls")]));
     expect(bridge).toBeDefined();
     expect([...bridge!.pendingExecs.keys()]).toEqual(["call_1"]);
   });
@@ -533,7 +541,7 @@ describe("streamCursor", () => {
     const message = doneMessage(await second);
     expect(message.stopReason).toBe("stop");
     expect(message.content).toEqual([{ type: "text", text: "done" }]);
-    expect(peekBridge(`${sessionId}:gpt-5`)).toBeUndefined();
+    expect(peekBridge(conversationIdFor([user("run ls")]))).toBeUndefined();
   });
 
   it("marks an errored tool result as an MCP error", async () => {
