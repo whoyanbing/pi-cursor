@@ -200,14 +200,15 @@ describe("formatUsage", () => {
     expect(text).toContain("Usage • Team");
   });
 
-  it("shows the server status message when the limit is hit", () => {
+  it("explains the cap banner instead of alarming when the limit is hit", () => {
     const text = formatUsage({ ...USAGE, limitHit: true, statusMessage: "You've hit your usage limit" });
-    expect(text).toContain("⚠ You've hit your usage limit");
+    expect(text).toContain("Paid allowance used up — bonus usage keeps working.");
+    expect(text).not.toContain("⚠");
   });
 
-  it("hides the status message when the limit is not hit", () => {
+  it("hides the cap note when the limit is not hit", () => {
     const text = formatUsage({ ...USAGE, statusMessage: "You've hit your usage limit", limitHit: false });
-    expect(text).not.toContain("⚠");
+    expect(text).not.toContain("Paid allowance used up");
   });
 
   it("renders bonus overage when total spend exceeds the cap", () => {

@@ -58,8 +58,12 @@ export function formatUsage(usage: CursorUsageSummary): string {
     lines.push("Plan usage unavailable for this account.");
   }
 
-  // Spend figures (cents): configured monthly cap vs actual total spend.
-  // Bonus (promotional) spend does not count against the cap.
+  // Spend figures (cents): the purchased monthly allowance (cap) vs total
+  // spend. The paid allowance is consumed first; promotional "bonus" spend is
+  // free and keeps the account usable after the cap — which is exactly when
+  // the server sets displayMessage "You've hit your usage limit". So that
+  // banner refers to the *paid cap*, not the percent gauge, and is rendered
+  // here as the cap's status rather than an alarming plan warning.
   if (usage.spendCapCents !== null) {
     const spent = usage.totalSpendCents ?? 0;
     const over = Math.max(0, spent - usage.spendCapCents);
@@ -70,10 +74,15 @@ export function formatUsage(usage: CursorUsageSummary): string {
     if (usage.bonusSpendCents !== null && usage.bonusSpendCents > 0) {
       lines.push(`  Bonus spend      ${formatUsd(usage.bonusSpendCents)} (promotional, free)`);
     }
+    if (usage.limitHit) {
+      lines.push("  Paid allowance used up — bonus usage keeps working.");
+    }
   }
 
-  if (usage.limitHit && usage.statusMessage) {
-    lines.push("", `⚠ ${usage.statusMessage}`);
+  if (usage.statusMessage && !usage.limitHit) {
+    // Any other server-written status is still worth surfacing.
+    lines.push("");
+    lines.push(usage.statusMessage);
   }
   if (usage.billingCycleEnd) {
     lines.push(`Resets             ${formatDate(usage.billingCycleEnd)}`);
