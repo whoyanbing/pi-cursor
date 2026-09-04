@@ -85,4 +85,25 @@ describe("buildConversationId", () => {
       buildConversationId(after, "gpt-5", "session-1"),
     );
   });
+
+  it("rotates even when the original first prompt is among the kept messages", () => {
+    const before = parseConversation({
+      systemPrompt: "sys",
+      messages: [user("original task"), assistantText("working"), user("keep going")],
+    });
+    const after = parseConversation({
+      systemPrompt: "sys",
+      messages: [
+        {
+          role: "compactionSummary",
+          summary: "## Goal\noriginal task",
+          timestamp: Date.now(),
+        } as never,
+        user("original task"),
+        assistantText("working"),
+        user("keep going"),
+      ],
+    });
+    expect(conversationFingerprint(after)).not.toBe(conversationFingerprint(before));
+  });
 });

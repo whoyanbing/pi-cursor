@@ -254,6 +254,34 @@ describe("handleServerMessage", () => {
     expect(h.calls[0].arguments).toEqual({ command: "ls" });
   });
 
+  it("matches a namespaced MCP name against the Pi tool name", () => {
+    const h = makeHandlers();
+    handleServerMessage(
+      frame({
+        message: {
+          case: "execServerMessage",
+          value: create(ExecServerMessageSchema, {
+            id: 12,
+            execId: "exec-2",
+            message: {
+              case: "mcpArgs",
+              value: create(McpArgsSchema, {
+                name: "mcp_pi_bash",
+                toolCallId: "call-2",
+                providerIdentifier: "pi",
+                args: encodeArgs({ command: "pwd" }),
+              }),
+            },
+          }),
+        },
+      }),
+      h.handlers,
+    );
+    expect(h.calls).toHaveLength(1);
+    expect(h.calls[0]).toMatchObject({ toolCallId: "call-2", toolName: "bash" });
+    expect(h.calls[0].arguments).toEqual({ command: "pwd" });
+  });
+
   it("rejects an unknown MCP tool with tool_not_found", () => {
     const h = makeHandlers();
     handleServerMessage(
@@ -398,6 +426,8 @@ describe("handleServerMessage", () => {
   it("ignores undecodable frames without throwing", () => {
     const h = makeHandlers();
     expect(() => handleServerMessage(new Uint8Array([0xff, 0xff, 0xff]), h.handlers)).not.toThrow();
+    expect(h.liveness()).toBe(1);
+    expect(h.errors).toHaveLength(0);
   });
 
   it("dispatches send through the injected writer", () => {

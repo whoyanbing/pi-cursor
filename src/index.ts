@@ -11,7 +11,7 @@ import { CURSOR_API, PROVIDER_ID, PROVIDER_NAME, getAgentUrl } from "./config.js
 import { loginCursor, refreshAccessToken } from "./auth/oauth.js";
 import { resolveCredential } from "./auth/credentials.js";
 import { registerCursorCommands } from "./commands.js";
-import { shouldSkipStaleThresholdCompact } from "./compaction-guard.js";
+import { shouldCancelThresholdCompact } from "./compaction-guard.js";
 import { cachedModels, startupCatalog, writeCache } from "./models/catalog.js";
 import { clearAllBridges } from "./protocol/bridge.js";
 import { discoverModels } from "./models/discovery.js";
@@ -96,12 +96,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   // Pi's between-turn compact check trusts last-assistant usage. Cursor writes
   // the pre-compact prompt size there, so a successful compact still looks like
-  // 94%+ and immediately runs again. Skip until a post-compact usage arrives,
-  // and drop parked Run streams so the next call rebuilds from the summary.
-  pi.on("session_before_compact", (event) => {
-    if (shouldSkipStaleThresholdCompact(event)) return { cancel: true };
+  // 94%+ and immediately runs again. Skip until usage actually drops, and drop
+  // parked Run streams so the next call rebuilds from the summary. Other
+  // providers are left alone — this hook is process-wide.
+  pi.on("session_before_compact", (event, ctx) => {
+    if (shouldCancelThresholdCompact(event, ctx.model?.provider)) return { cancel: true };
   });
-  pi.on("session_compact", () => {
+  pi.on("session_compact", (_event, ctx) => {
+    if (ctx.model?.provider !== PROVIDER_ID) return;
     clearAllBridges();
   });
 }

@@ -105,21 +105,16 @@ export function readCliAgentUrl(): string | undefined {
   }
 }
 
-let cachedAgentUrl: string | undefined;
-
 export function getAgentUrl(): string {
   const fromEnv =
     normalizeBaseUrl(process.env.PI_CURSOR_AGENT_URL) ??
     normalizeBaseUrl(process.env.CURSOR_AGENT_URL);
-  if (fromEnv) {
-    cachedAgentUrl = fromEnv;
-    return fromEnv;
-  }
-  if (cachedAgentUrl) return cachedAgentUrl;
-  cachedAgentUrl = readCliAgentUrl() ?? DEFAULT_AGENT_URL;
-  return cachedAgentUrl;
+  if (fromEnv) return fromEnv;
+  // Re-read the CLI cache each call: Cursor rotates agent hostnames.
+  return readCliAgentUrl() ?? DEFAULT_AGENT_URL;
 }
 
+/** @deprecated URL is resolved on every call; kept for tests and /reload callers. */
 export function resetAgentUrlCache(): void {
-  cachedAgentUrl = undefined;
+  // no-op
 }

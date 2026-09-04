@@ -22,14 +22,16 @@ export class BlobStore {
 
   /** Store `data` and return its 32-byte SHA-256 blob id. */
   put(data: Uint8Array): Uint8Array {
+    if (data.byteLength > MAX_BLOB_BYTES) {
+      this.droppedCount += 1;
+      this.droppedBytes += data.byteLength;
+      throw new Error(
+        `pi-cursor blob exceeds ${MAX_BLOB_BYTES} bytes (${data.byteLength}); refusing to send a dangling blob id`,
+      );
+    }
     const id = new Uint8Array(createHash("sha256").update(data).digest());
     const key = Buffer.from(id).toString("hex");
     if (!this.blobs.has(key)) {
-      if (data.byteLength > MAX_BLOB_BYTES) {
-        this.droppedCount += 1;
-        this.droppedBytes += data.byteLength;
-        return id;
-      }
       this.blobs.set(key, data);
       this.order.push(key);
       this.totalBytes += data.byteLength;

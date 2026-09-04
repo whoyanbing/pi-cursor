@@ -3,12 +3,14 @@
  * `contextWindow - reserveTokens` (~94% of a 256k window).
  *
  * Cursor reports prompt size into that usage field. After a compact, the kept
- * assistant messages still carry the pre-compact total (240k+). Pi's
- * between-turn check trusts that stale number, so the footer stays at 94–95%
- * and compact runs again immediately — often several times in a row.
+ * assistant messages still carry the pre-compact total (240k+), and Cursor may
+ * keep reporting that size until the conversation id rotates. Pi's between-turn
+ * check trusts the number, so the footer stays at 94–95% and compact runs again
+ * immediately.
  *
- * Skip a threshold compact when we have already compacted and there is not yet
- * a post-compact assistant usage reading to prove the window is still full.
+ * Skip a threshold compact on the Cursor provider when we have already compacted
+ * and post-compact usage has not yet dropped below the previous `tokensBefore`.
+ * Manual `/compact` and overflow recovery still run.
  */
 export interface CompactGuardUsage {
   input?: number;
@@ -31,6 +33,11 @@ export interface CompactGuardEvent {
   preparation: { tokensBefore: number };
   branchEntries: readonly CompactGuardEntry[];
 }
+
+/** Usage still at or above this fraction of `tokensBefore` is treated as stale. */
+export const STALE_USAGE_RATIO = 0.85;
+
+export const CURSOR_PROVIDER = "cursor";
 
 function entryTime(entry: CompactGuardEntry): number {
   const messageTs = entry.message?.timestamp;
@@ -65,10 +72,30 @@ export function shouldSkipStaleThresholdCompact(event: CompactGuardEvent): boole
   if (!previous) return false;
 
   const compactedAt = entryTime(previous);
+  const before =
+    previous.tokensBefore && previous.tokensBefore > 0 ? previous.tokensBefore : event.preparation.tokensBefore;
+  const dropBelow = before > 0 ? Math.floor(before * STALE_USAGE_RATIO) : 0;
+
+  let sawPostCompactUsage = false;
+  let sawDrop = false;
   for (const entry of event.branchEntries) {
     if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
     if (entryTime(entry) <= compactedAt) continue;
-    if (usageTokens(entry.message?.usage) > 0) return false;
+    const tokens = usageTokens(entry.message?.usage);
+    if (tokens <= 0) continue;
+    sawPostCompactUsage = true;
+    if (dropBelow <= 0 || tokens < dropBelow) sawDrop = true;
   }
-  return true;
+
+  if (!sawPostCompactUsage) return true;
+  return !sawDrop;
+}
+
+/** Only the Cursor provider has the stale-usage loop; other providers compact normally. */
+export function shouldCancelThresholdCompact(
+  event: CompactGuardEvent,
+  provider: string | undefined,
+): boolean {
+  if (provider !== CURSOR_PROVIDER) return false;
+  return shouldSkipStaleThresholdCompact(event);
 }

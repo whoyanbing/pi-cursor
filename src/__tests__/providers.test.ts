@@ -100,6 +100,9 @@ describe("extension registration", () => {
 
     expect([...pi.commands.keys()].sort()).toEqual(["cursor.doctor", "cursor.model", "cursor.usage"]);
 
+    expect(pi.on).toHaveBeenCalledWith("session_before_compact", expect.any(Function));
+    expect(pi.on).toHaveBeenCalledWith("session_compact", expect.any(Function));
+
     // The api registry resolves streamSimple for cursor-native models.
     expect(getApiProvider("cursor-native")).toBeDefined();
     const model = { id: "gpt-5", api: "cursor-native", provider: "cursor" } as never;

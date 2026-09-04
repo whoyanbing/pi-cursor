@@ -100,12 +100,10 @@ describe("getAgentUrl", () => {
     rmSync(configDir, { recursive: true, force: true });
   });
 
-  it("caches the resolved URL until reset", () => {
+  it("re-resolves each call so a rotated CLI host is picked up", () => {
     process.env.PI_CURSOR_AGENT_URL = "https://cached.example.com";
     expect(getAgentUrl()).toBe("https://cached.example.com");
     delete process.env.PI_CURSOR_AGENT_URL;
-    expect(getAgentUrl()).toBe("https://cached.example.com");
-    resetAgentUrlCache();
     expect(getAgentUrl()).toBe(DEFAULT_AGENT_URL);
   });
 

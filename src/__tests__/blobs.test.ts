@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BlobStore } from "../protocol/blobs.js";
+import { BlobStore, MAX_BLOB_BYTES } from "../protocol/blobs.js";
 
 describe("BlobStore", () => {
   it("addresses content by sha256", () => {
@@ -38,5 +38,18 @@ describe("BlobStore", () => {
     store.put(new Uint8Array(20));
     expect(store.bytes).toBe(30);
     expect(store.entries).toBe(2);
+  });
+
+  it("throws instead of returning a dangling id for oversized blobs", () => {
+    const store = new BlobStore();
+    expect(() => store.put(new Uint8Array(MAX_BLOB_BYTES + 1))).toThrow(/dangling blob id/);
+    expect(store.entries).toBe(0);
+  });
+
+  it("refuses oversized server-pushed blobs", () => {
+    const store = new BlobStore();
+    const id = new Uint8Array(32).fill(7);
+    expect(store.setFromServer(id, new Uint8Array(MAX_BLOB_BYTES + 1))).toBe(false);
+    expect(store.has(id)).toBe(false);
   });
 });

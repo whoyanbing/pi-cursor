@@ -361,7 +361,11 @@ function dropBridge(state: RunState): void {
   }
   state.bridge = null;
 }
-/** Wire transport + protocol handlers to the current run state. */
+/**
+ * Wire transport + protocol handlers to the current run state.
+ * RpcStream.onData / onEnd / onError assign (they do not stack); calling this
+ * again on resume replaces the previous handlers rather than duplicating them.
+ */
 function attachTransport(state: RunState): void {
   const bridge = state.bridge!;
 

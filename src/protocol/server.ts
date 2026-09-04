@@ -59,8 +59,10 @@ import {
   WriteShellStdinResultSchema,
   type McpToolDefinition,
 } from "../proto/agent_pb.js";
+import { recordRun } from "../diagnostics.js";
 import { decodeArgs } from "./request.js";
 import type { BlobStore } from "./blobs.js";
+import { piToolName } from "./prompt.js";
 import { nativeToolRejection } from "./tools.js";
 
 export interface PendingToolCall {
@@ -316,7 +318,7 @@ function handleExec(h: ServerHandlers, exec: { id: number; execId: string; messa
 
   if (exec.message.case === "mcpArgs") {
     const mcp = args as { name?: string; toolName?: string; args?: Record<string, Uint8Array>; toolCallId?: string };
-    const toolName = mcp.toolName || mcp.name || "";
+    const toolName = piToolName((mcp.toolName || mcp.name || "").trim());
     const known = toolNames(h);
     if (!toolName || !known.has(toolName)) {
       answerExec(h, exec.id, exec.execId, {
@@ -422,6 +424,8 @@ export function handleServerMessage(frame: Uint8Array, h: ServerHandlers): void 
     server = fromBinary(AgentServerMessageSchema, frame);
   } catch {
     // Wire drift or a truncated frame; skip it rather than killing the turn.
+    recordRun({ lastError: "undecodable AgentServerMessage frame" });
+    h.onLiveness();
     return;
   }
   const message = server.message;
