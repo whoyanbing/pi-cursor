@@ -60,15 +60,12 @@ const USAGE: CursorUsageSummary = {
   billingCycleEnd: "2026-10-01T00:00:00.000Z",
   membershipType: "Pro",
   limitType: "user",
-  plan: {
-    enabled: true,
-    used: 8400,
-    limit: 20000,
-    remaining: 11600,
-    totalPercentUsed: 42,
-    autoPercentUsed: 30,
-    apiPercentUsed: 12,
-  },
+  percents: { total: 42, auto: 30, api: 12 },
+  statusMessage: undefined,
+  spendCapCents: 20000,
+  totalSpendCents: 8400,
+  bonusSpendCents: 0,
+  limitHit: false,
 };
 
 describe("registerCursorCommands", () => {
@@ -147,7 +144,7 @@ describe("registerCursorCommands", () => {
         new Response(
           JSON.stringify({
             billingCycleEnd: "1759276800000",
-            planUsage: { totalPercentUsed: 42, autoPercentUsed: 30, apiPercentUsed: 12, includedSpend: 8400, limit: 20000 },
+            planUsage: { totalPercentUsed: 42, autoPercentUsed: 30, apiPercentUsed: 12, totalSpend: 8400, includedSpend: 8400, limit: 20000 },
             spendLimitUsage: { limitType: "user" },
           }),
           { status: 200 },
@@ -158,9 +155,9 @@ describe("registerCursorCommands", () => {
     await pi.commands.get("cursor.usage")!.handler("", ctx);
     const message = ctx.notifications[0].message;
     expect(message).toContain("Usage • Pro");
-    expect(message).toContain("8,400 / 20,000 used");
     expect(message).toContain("42% used");
     expect(message).toContain("Auto requests");
+    expect(message).toContain("Spend cap          $84.00 / $200.00");
     expect(message).toContain("dashboard");
   });
 
@@ -187,21 +184,54 @@ describe("registerCursorCommands", () => {
 });
 
 describe("formatUsage", () => {
-  it("renders team membership and a usage bar", () => {
-    const text = formatUsage({ ...USAGE, membershipType: "Team", limitType: "team" });
-    expect(text).toContain("Usage • Team");
-    expect(text).toContain("team balance");
+  it("renders the included-usage gauge and spend cap", () => {
+    const text = formatUsage(USAGE);
+    expect(text).toContain("Usage • Pro");
+    expect(text).toContain("Included usage     42% used");
     expect(text).toMatch(/█+░+/);
+    expect(text).toContain("Auto requests    30% used");
+    expect(text).toContain("API requests     12% used");
+    expect(text).toContain("Spend cap          $84.00 / $200.00");
+    expect(text).not.toContain("bonus overage");
   });
 
-  it("renders missing plan gracefully", () => {
-    const text = formatUsage({ membershipType: "Pro" });
+  it("renders team membership", () => {
+    const text = formatUsage({ ...USAGE, membershipType: "Team", limitType: "team" });
+    expect(text).toContain("Usage • Team");
+  });
+
+  it("shows the server status message when the limit is hit", () => {
+    const text = formatUsage({ ...USAGE, limitHit: true, statusMessage: "You've hit your usage limit" });
+    expect(text).toContain("⚠ You've hit your usage limit");
+  });
+
+  it("hides the status message when the limit is not hit", () => {
+    const text = formatUsage({ ...USAGE, statusMessage: "You've hit your usage limit", limitHit: false });
+    expect(text).not.toContain("⚠");
+  });
+
+  it("renders bonus overage when total spend exceeds the cap", () => {
+    const text = formatUsage({ ...USAGE, totalSpendCents: 25685, bonusSpendCents: 13685 });
+    expect(text).toContain("Spend cap          $200.00 / $200.00 (bonus overage $56.85)");
+    expect(text).toContain("Bonus spend      $136.85 (promotional, free)");
+  });
+
+  it("renders a missing plan gracefully", () => {
+    const text = formatUsage({
+      membershipType: "Pro",
+      percents: { total: null, auto: null, api: null },
+      spendCapCents: null,
+      totalSpendCents: null,
+      bonusSpendCents: null,
+      limitHit: false,
+    });
     expect(text).toContain("Plan usage unavailable");
   });
 
-  it("renders on-demand spend when present", () => {
-    const text = formatUsage({ ...USAGE, onDemandSpendCents: 1234 });
-    expect(text).toContain("On-demand spend   $12.34");
+  it("formats the reset date readably", () => {
+    const text = formatUsage(USAGE);
+    expect(text).toMatch(/Resets\s+Oct 1, 2026/);
+    expect(text).not.toContain("2026-10-01T00:00:00");
   });
 });
 

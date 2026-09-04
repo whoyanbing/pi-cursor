@@ -2,25 +2,30 @@
  * Current-period usage via `DashboardService/GetCurrentPeriodUsage`.
  *
  * A Connect *JSON* unary call: plain HTTPS POST with `{}` and the OAuth bearer
- * token. Percentages are 0–100. `spendLimitUsage.limitType` distinguishes
- * individual ("user" → Pro) from team ("team" → Team) billing.
+ * token. `spendLimitUsage.limitType` distinguishes individual ("user" → Pro)
+ * from team ("team" → Team) billing.
  *
- * NOTE on units: `planUsage.includedSpend`/`limit` are not currency. Empirically
- * they are plan units whose ratio differs from `totalPercentUsed` (a real
- * account showed spend=limit=2000 at 32.6% used), so they are rendered as raw
- * units, never as dollars. Only `spendLimitUsage.includedSpend` — actual
- * on-demand spend — is treated as cents.
+ * Units, verified against a live account:
+ *   - `planUsage.total/auto/apiPercentUsed` are the dashboard gauges (0–100).
+ *     The server's own `displayMessage` sentences match them exactly, so these
+ *     are what we render.
+ *   - `planUsage.totalSpend / includedSpend / bonusSpend / limit` are spend
+ *     figures in **cents** ($156.85 / $20.00 / $136.85 / $20.00), but their
+ *     ratio does NOT equal the percent gauge (spend counts bonus usage and the
+ *     gauge tracks included allowance differently). They are therefore NOT
+ *     rendered as the plan progress bar. `limit` is the configured monthly
+ *     spend cap; `totalSpend > limit` is how "You've hit your usage limit"
+ *     arises.
+ *   - `displayMessage` / `autoModelSelectedDisplayMessage` /
+ *     `namedModelSelectedDisplayMessage` are authoritative server-written
+ *     status sentences, surfaced verbatim.
  */
 import { USAGE_URL } from "../config.js";
 
-export interface UsageBucket {
-  enabled?: boolean;
-  used: number | null;
-  limit: number | null;
-  remaining: number | null;
-  totalPercentUsed: number | null;
-  autoPercentUsed: number | null;
-  apiPercentUsed: number | null;
+export interface UsagePercentages {
+  total: number | null;
+  auto: number | null;
+  api: number | null;
 }
 
 export interface CursorUsageSummary {
@@ -28,8 +33,18 @@ export interface CursorUsageSummary {
   billingCycleEnd?: string;
   membershipType: string;
   limitType?: string;
-  plan?: UsageBucket;
-  onDemandSpendCents?: number | null;
+  /** Dashboard gauge percentages (0–100). */
+  percents: UsagePercentages;
+  /** Server-written status sentence (e.g. "You've hit your usage limit"). */
+  statusMessage?: string;
+  /** Monthly spend cap, in cents (planUsage.limit). */
+  spendCapCents: number | null;
+  /** Total spend in the period, in cents (included + bonus). */
+  totalSpendCents: number | null;
+  /** Spend beyond the purchased allowance, in cents (promotional). */
+  bonusSpendCents: number | null;
+  /** True when the server says the usage limit has been hit. */
+  limitHit: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -38,6 +53,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function numberOrNull(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function stringOrNull(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function msToIso(value: unknown): string | undefined {
@@ -63,27 +82,24 @@ export function parsePeriodUsage(value: unknown): CursorUsageSummary {
   else if (limitType === "team") membershipType = "Team";
   else if (typeof value.membershipType === "string" && value.membershipType) membershipType = value.membershipType;
 
-  // Raw plan units (see NOTE above) — displayed verbatim, not as currency.
-  const used = numberOrNull(planUsage?.includedSpend);
-  const limit = numberOrNull(planUsage?.limit);
+  const totalSpendCents = numberOrNull(planUsage?.totalSpend);
+  const spendCapCents = numberOrNull(planUsage?.limit);
 
   return {
     billingCycleStart: msToIso(value.billingCycleStart),
     billingCycleEnd: msToIso(value.billingCycleEnd),
     membershipType,
     limitType,
-    plan: planUsage
-      ? {
-          enabled: true,
-          used,
-          limit,
-          remaining: used !== null && limit !== null ? Math.max(0, limit - used) : null,
-          totalPercentUsed: numberOrNull(planUsage.totalPercentUsed),
-          autoPercentUsed: numberOrNull(planUsage.autoPercentUsed),
-          apiPercentUsed: numberOrNull(planUsage.apiPercentUsed),
-        }
-      : undefined,
-    onDemandSpendCents: numberOrNull(spendLimitUsage?.includedSpend),
+    percents: {
+      total: numberOrNull(planUsage?.totalPercentUsed),
+      auto: numberOrNull(planUsage?.autoPercentUsed),
+      api: numberOrNull(planUsage?.apiPercentUsed),
+    },
+    statusMessage: stringOrNull(value.displayMessage),
+    spendCapCents,
+    totalSpendCents,
+    bonusSpendCents: numberOrNull(planUsage?.bonusSpend),
+    limitHit: Boolean(value.enabled === true && value.displayMessage && /limit/i.test(String(value.displayMessage))),
   };
 }
 
@@ -108,10 +124,4 @@ export async function fetchCursorUsage(accessToken: string, signal?: AbortSignal
 export function formatUsd(cents: number | null | undefined): string {
   if (cents === null || cents === undefined) return "—";
   return `$${(cents / 100).toFixed(2)}`;
-}
-
-/** Format raw plan units with thousands separators; null/undefined → em dash. */
-export function formatUnits(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "—";
-  return value.toLocaleString("en-US", { maximumFractionDigits: 0 });
 }

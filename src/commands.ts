@@ -3,7 +3,7 @@
  */
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { resolveAccessToken, resolveCredential } from "./auth/credentials.js";
-import { fetchCursorUsage, formatUnits, formatUsd, type CursorUsageSummary } from "./auth/usage.js";
+import { fetchCursorUsage, formatUsd, type CursorUsageSummary } from "./auth/usage.js";
 import { DASHBOARD_URL, getAgentUrl } from "./config.js";
 import { diagnosticsReport } from "./diagnostics.js";
 import type { ProcessedModel } from "./models/types.js";
@@ -33,36 +33,50 @@ function percentText(percent: number | null): string {
   return percent === null ? "n/a" : `${Math.round(percent)}% used`;
 }
 
-export function formatUsage(usage: CursorUsageSummary): string {
-  const title = `Usage • ${usage.membershipType || "Pro"}`;
-  const lines: string[] = [title, ""];
+function formatDate(iso: string | undefined): string {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.valueOf())) return iso;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
-  if (usage.plan) {
-    lines.push(
-      `Plan (included)   ${formatUnits(usage.plan.used)} / ${formatUnits(usage.plan.limit)} used`,
-    );
-    lines.push(`                  ${percentText(usage.plan.totalPercentUsed)}  ${bar(usage.plan.totalPercentUsed)}`);
-    if (usage.plan.autoPercentUsed !== null && usage.plan.autoPercentUsed !== undefined) {
-      lines.push(`  Auto requests   ${percentText(usage.plan.autoPercentUsed)}`);
-    }
-    if (usage.plan.apiPercentUsed !== null && usage.plan.apiPercentUsed !== undefined) {
-      lines.push(`  API requests    ${percentText(usage.plan.apiPercentUsed)}`);
-    }
-    if (usage.plan.remaining !== null && usage.plan.remaining !== undefined) {
-      lines.push(`  Remaining       ${formatUnits(usage.plan.remaining)}`);
-    }
+export function formatUsage(usage: CursorUsageSummary): string {
+  const lines: string[] = [`Usage • ${usage.membershipType || "Pro"}`, ""];
+
+  const { total, auto, api } = usage.percents;
+  if (total !== null) {
+    lines.push(`Included usage     ${percentText(total)}  ${bar(total)}`);
+    if (auto !== null) lines.push(`  Auto requests    ${percentText(auto)}`);
+    if (api !== null) lines.push(`  API requests     ${percentText(api)}`);
   } else {
     lines.push("Plan usage unavailable for this account.");
   }
 
-  if (usage.onDemandSpendCents !== null && usage.onDemandSpendCents !== undefined) {
-    lines.push("", `On-demand spend   ${formatUsd(usage.onDemandSpendCents)}`);
+  // Spend figures (cents): configured monthly cap vs actual total spend.
+  // Bonus (promotional) spend does not count against the cap.
+  if (usage.spendCapCents !== null) {
+    const spent = usage.totalSpendCents ?? 0;
+    const over = Math.max(0, spent - usage.spendCapCents);
+    const capped = Math.min(spent, usage.spendCapCents);
+    lines.push(
+      `Spend cap          ${formatUsd(capped)} / ${formatUsd(usage.spendCapCents)}${over > 0 ? ` (bonus overage ${formatUsd(over)})` : ""}`,
+    );
+    if (usage.bonusSpendCents !== null && usage.bonusSpendCents > 0) {
+      lines.push(`  Bonus spend      ${formatUsd(usage.bonusSpendCents)} (promotional, free)`);
+    }
   }
-  if (usage.limitType === "team") {
-    lines.push("", "Billing: team spend limit (shared team balance).");
+
+  if (usage.limitHit && usage.statusMessage) {
+    lines.push("", `⚠ ${usage.statusMessage}`);
   }
   if (usage.billingCycleEnd) {
-    lines.push(`Resets            ${usage.billingCycleEnd}`);
+    lines.push(`Resets             ${formatDate(usage.billingCycleEnd)}`);
   }
   lines.push("", `Dashboard: ${DASHBOARD_URL}`);
   return lines.join("\n");
