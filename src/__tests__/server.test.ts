@@ -9,7 +9,12 @@ import {
   InteractionUpdateSchema,
   KvServerMessageSchema,
   McpArgsSchema,
+  McpToolCallSchema,
+  McpToolErrorSchema,
+  McpToolResultSchema,
   ReadArgsSchema,
+  ToolCallCompletedUpdateSchema,
+  ToolCallSchema,
   RequestContextArgsSchema,
   SetBlobArgsSchema,
   TextDeltaUpdateSchema,
@@ -124,6 +129,38 @@ describe("handleServerMessage", () => {
     handleServerMessage(update({ message: { case: "heartbeat", value: create(HeartbeatUpdateSchema, {}) } }), h.handlers);
     expect(h.liveness()).toBe(1);
     expect(h.texts).toEqual([]);
+  });
+
+  it("does not abort the turn on a failed MCP toolCallCompleted", () => {
+    const h = makeHandlers();
+    handleServerMessage(
+      update({
+        message: {
+          case: "toolCallCompleted",
+          value: create(ToolCallCompletedUpdateSchema, {
+            callId: "c1",
+            toolCall: create(ToolCallSchema, {
+              tool: {
+                case: "mcpToolCall",
+                value: create(McpToolCallSchema, {
+                  args: create(McpArgsSchema, { toolName: "bash" }),
+                  result: create(McpToolResultSchema, {
+                    result: {
+                      case: "error",
+                      value: create(McpToolErrorSchema, { error: "Tool execution error" }),
+                    },
+                  }),
+                }),
+              },
+            }),
+          }),
+        },
+      }),
+      h.handlers,
+    );
+    expect(h.errors).toEqual([]);
+    expect(h.ended).toHaveLength(0);
+    expect(h.liveness()).toBe(1);
   });
 
   it("answers a KV get_blob_args from the store", () => {

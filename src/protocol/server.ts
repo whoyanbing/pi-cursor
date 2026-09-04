@@ -454,17 +454,11 @@ export function handleServerMessage(frame: Uint8Array, h: ServerHandlers): void 
           h.onLiveness();
           return;
         case "toolCallCompleted": {
-          // Native tool errors are surfaced so the model can adapt; MCP results
-          // flow through the exec channel instead.
-          const result = update.value.toolCall?.tool;
-          if (result?.case === "mcpToolCall") {
-            const mcpResult = result.value.result?.result;
-            if (mcpResult && mcpResult.case !== "success") {
-              const error = (mcpResult.value as { error?: string; reason?: string }).error ??
-                (mcpResult.value as { reason?: string }).reason;
-              if (error) h.onError(`Cursor tool ${result.value.args?.toolName ?? ""} failed: ${error}`);
-            }
-          }
+          // Completion is informational. MCP results already arrived over the
+          // exec channel and were applied as Pi tool results. Treating a later
+          // non-success completion as onError aborted the whole turn with
+          // "Cursor tool  failed: Tool execution error" after the tool had
+          // already run (including successful bash/edit/read calls).
           h.onLiveness();
           return;
         }
