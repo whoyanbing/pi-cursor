@@ -66,6 +66,11 @@ export const HEARTBEAT_INTERVAL_MS = 15_000;
 export const H2_PING_INTERVAL_MS = 20_000;
 export const CONNECT_TIMEOUT_MS = 30_000;
 
+/** HTTP/2 handshake timeout; 0 disables. Does not cover first-token wait. */
+export function connectTimeoutMs(): number {
+  return envInt("PI_CURSOR_CONNECT_TIMEOUT_MS", CONNECT_TIMEOUT_MS);
+}
+
 export function clientVersion(): string {
   return process.env.PI_CURSOR_CLIENT_VERSION?.trim() || DEFAULT_CLIENT_VERSION;
 }

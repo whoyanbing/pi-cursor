@@ -65,8 +65,9 @@ export function diagnosticsReport(): string {
     `lastError=${state.lastError ?? "none"}`,
     `transport=in-process-h2`,
     `commands=/cursor.model /cursor.usage /cursor.doctor`,
-    "hint=On stalls check lastError and the stream idle timeout (PI_CURSOR_STREAM_IDLE_TIMEOUT_MS);",
-    "hint=on auth errors re-run /login cursor or check PI_CURSOR_SYSTEM_CREDENTIALS.",
+    "hint=On stalls check lastError; handshake timeouts retry once on a fresh HTTP/2 session.",
+    "hint=Tune PI_CURSOR_CONNECT_TIMEOUT_MS (handshake) and PI_CURSOR_STREAM_IDLE_TIMEOUT_MS (silence).",
+    "hint=On auth errors re-run /login cursor or check PI_CURSOR_SYSTEM_CREDENTIALS.",
   ];
   return lines.join("\n");
 }

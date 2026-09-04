@@ -101,6 +101,8 @@ class TurnWriter {
   private started = false;
   private finalized = false;
   private emittedContent = false;
+  /** Output deltas held until a real prompt-size checkpoint arrives. */
+  private pendingOutputTokens = 0;
 
   constructor(
     private readonly model: Model<Api>,
@@ -134,13 +136,31 @@ class TurnWriter {
   }
 
   addOutputTokens(tokens: number): void {
+    if (tokens <= 0) return;
+    // Pi's footer treats the latest assistant `usage.totalTokens` as context
+    // size. Publishing a handful of output tokens before the prompt-size
+    // checkpoint makes the percentage flash to 0%. Hold them until input is known.
+    if (this.output.usage.input <= 0) {
+      this.pendingOutputTokens += tokens;
+      return;
+    }
     this.output.usage.output += tokens;
     this.output.usage.totalTokens = this.output.usage.input + this.output.usage.output;
   }
 
   setInputTokens(tokens: number): void {
-    this.output.usage.input = Math.max(0, tokens);
+    // A 0-token checkpoint is a keep-alive, not a real measurement.
+    if (tokens <= 0) return;
+    // Cursor sometimes sends a smaller follow-up checkpoint; never let usage
+    // jump backwards on the same turn (that flashes the footer down).
+    if (tokens < this.output.usage.input) return;
+    this.output.usage.input = tokens;
+    if (this.pendingOutputTokens > 0) {
+      this.output.usage.output += this.pendingOutputTokens;
+      this.pendingOutputTokens = 0;
+    }
     this.output.usage.totalTokens = this.output.usage.input + this.output.usage.output;
+    this.output.usage.cost = usageCost(this.model, this.output.usage);
   }
 
   /** Visible text; inline reasoning tags are split out into thinking blocks. */
@@ -178,6 +198,7 @@ class TurnWriter {
     if (flushed.content) this.appendText(flushed.content);
     this.closeThinking();
     this.closeText();
+    this.flushPendingOutput();
     this.finalized = true;
     this.output.stopReason = reason;
     if (errorMessage) this.output.errorMessage = errorMessage;
@@ -240,6 +261,16 @@ class TurnWriter {
     const block = this.output.content[this.thinkingIndex] as ThinkingContent;
     this.stream.push({ type: "thinking_end", contentIndex: this.thinkingIndex, content: block.thinking, partial: this.output });
     this.thinkingIndex = -1;
+  }
+
+  private flushPendingOutput(): void {
+    // Without a prompt-size checkpoint, leave usage at 0 so Pi's footer keeps
+    // using the previous assistant. Flushing a few output tokens here is what
+    // made the context percentage jump to 0% on tool calls.
+    if (this.pendingOutputTokens <= 0 || this.output.usage.input <= 0) return;
+    this.output.usage.output += this.pendingOutputTokens;
+    this.pendingOutputTokens = 0;
+    this.output.usage.totalTokens = this.output.usage.input + this.output.usage.output;
   }
 }
 

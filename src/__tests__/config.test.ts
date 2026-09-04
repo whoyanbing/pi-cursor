@@ -3,6 +3,7 @@ import {
   DEFAULT_AGENT_URL,
   bridgeMaxPauseMs,
   clientVersion,
+  connectTimeoutMs,
   getAgentUrl,
   normalizeBaseUrl,
   readCliAgentUrl,
@@ -152,5 +153,15 @@ describe("numeric tunables", () => {
   it("bridgeMaxPauseMs defaults to 15 minutes", () => {
     delete process.env.PI_CURSOR_BRIDGE_PAUSE_MS;
     expect(bridgeMaxPauseMs()).toBe(900_000);
+  });
+
+  it("connectTimeoutMs defaults to 30 seconds", () => {
+    delete process.env.PI_CURSOR_CONNECT_TIMEOUT_MS;
+    expect(connectTimeoutMs()).toBe(30_000);
+  });
+
+  it("connectTimeoutMs accepts 0 to disable", () => {
+    process.env.PI_CURSOR_CONNECT_TIMEOUT_MS = "0";
+    expect(connectTimeoutMs()).toBe(0);
   });
 });

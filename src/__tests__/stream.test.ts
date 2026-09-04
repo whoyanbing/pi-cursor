@@ -10,6 +10,8 @@ import {
   GetBlobArgsSchema,
   McpArgsSchema,
   ReadArgsSchema,
+  ConversationStateStructureSchema,
+  ConversationTokenDetailsSchema,
   TextDeltaUpdateSchema,
   ThinkingDeltaUpdateSchema,
   TokenDeltaUpdateSchema,
@@ -92,6 +94,17 @@ class FakeStream implements RpcStream {
   tokens(count: number): void {
     this.serverFrame({
       message: { case: "interactionUpdate", value: create(InteractionUpdateSchema, { message: { case: "tokenDelta", value: create(TokenDeltaUpdateSchema, { tokens: count }) } }) },
+    });
+  }
+
+  usage(usedTokens: number, maxTokens = 200000): void {
+    this.serverFrame({
+      message: {
+        case: "conversationCheckpointUpdate",
+        value: create(ConversationStateStructureSchema, {
+          tokenDetails: create(ConversationTokenDetailsSchema, { usedTokens, maxTokens }),
+        }),
+      },
     });
   }
 
@@ -383,7 +396,7 @@ describe("streamCursor", () => {
     ]);
   });
 
-  it("counts token deltas into output usage", async () => {
+  it("does not publish output-only usage without a prompt-size checkpoint", async () => {
     const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("hi")]), { apiKey: "t", sessionId }));
     const stream = lastStream();
     stream.text("x");
@@ -392,8 +405,42 @@ describe("streamCursor", () => {
     stream.turnEnded();
 
     const message = doneMessage(await eventsPromise);
+    expect(message.usage.input).toBe(0);
+    expect(message.usage.output).toBe(0);
+    expect(message.usage.totalTokens).toBe(0);
+  });
+
+  it("does not publish output usage until a prompt-size checkpoint arrives", async () => {
+    const events: AssistantMessageEvent[] = [];
+    const eventsPromise = (async () => {
+      for await (const event of streamCursor(makeModel(), makeContext([user("hi")]), { apiKey: "t", sessionId })) {
+        events.push(event);
+        if (event.type === "done" || event.type === "error") break;
+      }
+    })();
+    const stream = lastStream();
+    stream.text("x");
+    stream.tokens(11);
+    await vi.waitFor(() => expect(events.some((event) => event.type === "text_delta")).toBe(true));
+    const before = events.filter((event) => event.type === "text_delta").at(-1) as { partial: AssistantMessage };
+    expect(before.partial.usage.input).toBe(0);
+    expect(before.partial.usage.output).toBe(0);
+    expect(before.partial.usage.totalTokens).toBe(0);
+
+    stream.usage(80_000);
+    stream.tokens(7);
+    stream.text("y");
+    await vi.waitFor(() => {
+      const last = events.filter((event) => event.type === "text_delta").at(-1) as { partial: AssistantMessage } | undefined;
+      expect(last?.partial.usage.input).toBe(80_000);
+      expect(last?.partial.usage.output).toBe(18);
+    });
+    stream.turnEnded();
+    await eventsPromise;
+    const message = doneMessage(events);
+    expect(message.usage.input).toBe(80_000);
     expect(message.usage.output).toBe(18);
-    expect(message.usage.totalTokens).toBe(18);
+    expect(message.usage.totalTokens).toBe(80_018);
   });
 
   it("answers a KV blob request from the store", async () => {
@@ -443,6 +490,20 @@ describe("streamCursor", () => {
     const bridge = peekBridge(`${sessionId}:gpt-5`);
     expect(bridge).toBeDefined();
     expect([...bridge!.pendingExecs.keys()]).toEqual(["call_1"]);
+  });
+
+  it("keeps usage empty on toolUse until a prompt-size checkpoint arrives", async () => {
+    const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("run ls")]), { apiKey: "t", sessionId }));
+    const stream = lastStream();
+    stream.tokens(11);
+    stream.text("running");
+    stream.execMcp(9, "exec-1", "call_1", "bash", { command: "ls" });
+
+    const message = doneMessage(await eventsPromise);
+    expect(message.stopReason).toBe("toolUse");
+    expect(message.usage.input).toBe(0);
+    expect(message.usage.output).toBe(0);
+    expect(message.usage.totalTokens).toBe(0);
   });
 
   it("resumes a parked bridge with the tool result inline", async () => {

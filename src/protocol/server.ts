@@ -489,7 +489,7 @@ export function handleServerMessage(frame: Uint8Array, h: ServerHandlers): void 
     }
     case "conversationCheckpointUpdate": {
       const details = message.value.tokenDetails;
-      if (details) h.onUsage(details.usedTokens ?? 0);
+      if (details && details.usedTokens > 0) h.onUsage(details.usedTokens);
       else h.onLiveness();
       return;
     }

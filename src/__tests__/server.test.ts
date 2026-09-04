@@ -325,6 +325,23 @@ describe("handleServerMessage", () => {
     expect(h.usage).toEqual([1234]);
   });
 
+  it("treats a 0-token checkpoint as liveness", () => {
+    const h = makeHandlers();
+    handleServerMessage(
+      frame({
+        message: {
+          case: "conversationCheckpointUpdate",
+          value: create(ConversationStateStructureSchema, {
+            tokenDetails: create(ConversationTokenDetailsSchema, { usedTokens: 0, maxTokens: 200000 }),
+          }),
+        },
+      }),
+      h.handlers,
+    );
+    expect(h.usage).toEqual([]);
+    expect(h.liveness()).toBe(1);
+  });
+
   it("surfaces a server abort as an error", () => {
     const h = makeHandlers();
     handleServerMessage(
