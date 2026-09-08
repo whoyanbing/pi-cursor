@@ -23,14 +23,15 @@ describe("package metadata", () => {
     expect(pkg.pi.extensions).toEqual(["./src/index.ts"]);
   });
 
-  it("ships src and proto", () => {
+  it("ships src, proto and LICENSE", () => {
     expect(pkg.files).toContain("src");
     expect(pkg.files).toContain("proto");
+    expect(pkg.files).toContain("LICENSE");
   });
 
-  it("depends on @bufbuild/protobuf and peers on pi", () => {
+  it("depends on @bufbuild/protobuf and peers on a pinned pi range", () => {
     expect(pkg.dependencies["@bufbuild/protobuf"]).toBeTruthy();
-    expect(pkg.peerDependencies["@earendil-works/pi-ai"]).toBeTruthy();
-    expect(pkg.peerDependencies["@earendil-works/pi-coding-agent"]).toBeTruthy();
+    expect(pkg.peerDependencies["@earendil-works/pi-ai"]).toMatch(/^\^/);
+    expect(pkg.peerDependencies["@earendil-works/pi-coding-agent"]).toMatch(/^\^/);
   });
 });

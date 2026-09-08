@@ -12,9 +12,9 @@
  * token is available.
  */
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { PROVIDER_ID } from "../config.js";
 import { isTokenNearExpiry, refreshAccessToken, tokenExpiry } from "./oauth.js";
@@ -31,6 +31,42 @@ const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 let cached: (ResolvedCredential & { expiresAt: number }) | null = null;
 let lastSource: CredentialSource = "none";
+let systemCredentialNoticeShown = false;
+
+function authStorePath(): string {
+  return join(homedir(), ".pi", "agent", "auth.json");
+}
+
+/**
+ * Persist a rotated pi-oauth token back to auth.json. Cursor may rotate the
+ * refresh token on exchange; keeping only the in-memory copy would invalidate
+ * Pi's next `/login`-owned refresh. Keychain / IDE tokens are never written
+ * here — those stores belong to the desktop apps.
+ */
+function persistPiOAuth(access: string, refresh: string, expires: number): void {
+  const authPath = authStorePath();
+  try {
+    mkdirSync(dirname(authPath), { recursive: true, mode: 0o700 });
+    let data: Record<string, unknown> = {};
+    if (existsSync(authPath)) {
+      const parsed = JSON.parse(readFileSync(authPath, "utf8")) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        data = parsed as Record<string, unknown>;
+      }
+    }
+    const current = data[PROVIDER_ID];
+    if (current && typeof current === "object" && !Array.isArray(current)) {
+      const type = (current as { type?: unknown }).type;
+      if (type && type !== "oauth") return;
+      data[PROVIDER_ID] = { ...current, type: "oauth", access, refresh, expires };
+    } else {
+      data[PROVIDER_ID] = { type: "oauth", access, refresh, expires };
+    }
+    writeFileSync(authPath, JSON.stringify(data, null, 2), { encoding: "utf8", mode: 0o600 });
+  } catch {
+    // In-memory token still works for this process.
+  }
+}
 
 export function systemCredentialsAllowed(): boolean {
   return process.env.PI_CURSOR_SYSTEM_CREDENTIALS?.trim() !== "0";
@@ -170,6 +206,9 @@ export async function resolveCredential(options?: { forceRefresh?: boolean; sign
     try {
       const refreshed = await refreshAccessToken(credential.refreshToken, options?.signal);
       credential = { accessToken: refreshed.access, refreshToken: refreshed.refresh, source: credential.source };
+      if (credential.source === "pi-oauth") {
+        persistPiOAuth(refreshed.access, refreshed.refresh, refreshed.expires);
+      }
     } catch {
       // Keep the unrefreshed token if it is not actually expired yet.
       if (isTokenNearExpiry(credential.accessToken, -REFRESH_SKEW_MS)) {
@@ -191,8 +230,18 @@ export async function resolveAccessToken(): Promise<string> {
   return credential?.accessToken ?? "";
 }
 
+/** One-shot notice when we reused desktop-app credentials. */
+export function consumeSystemCredentialNotice(): string | undefined {
+  if (systemCredentialNoticeShown) return undefined;
+  if (lastSource !== "keychain" && lastSource !== "ide-vscdb") return undefined;
+  systemCredentialNoticeShown = true;
+  const where = lastSource === "keychain" ? "the macOS Keychain" : "Cursor IDE local state";
+  return `Using Cursor credentials from ${where}. Run /login cursor for a Pi-owned login, or set PI_CURSOR_SYSTEM_CREDENTIALS=0 to disable reuse.`;
+}
+
 /** Drop the in-memory cache (after login/logout or account switches). */
 export function resetCredentialCache(): void {
   cached = null;
   lastSource = "none";
+  systemCredentialNoticeShown = false;
 }

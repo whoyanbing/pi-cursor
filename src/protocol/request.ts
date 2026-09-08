@@ -42,10 +42,9 @@ import {
 import type { ImagePart, ParsedTurn, TurnStep } from "./context.js";
 import { BlobStore } from "./blobs.js";
 import { buildHistory, encodeMessage, mcpToolName, MCP_PROVIDER } from "./prompt.js";
+import { boundToolResultPayload } from "./tool-result.js";
 
-/** Bound a single replayed tool result so one huge dump cannot poison a turn. */
-export const MAX_TOOL_RESULT_TEXT_BYTES = 512 * 1024;
-export const MAX_TOOL_RESULT_TOTAL_BYTES = 16 * 1024 * 1024;
+export { MAX_TOOL_RESULT_TEXT_BYTES, MAX_TOOL_RESULT_TOTAL_BYTES, boundToolResultText } from "./tool-result.js";
 
 export interface ModelRouting {
   /** Raw Cursor model id to request (may carry an effort suffix). */
@@ -64,25 +63,13 @@ export interface BuildRequestInput {
   conversationId: string;
   /** Reuse a blob store across a bridge pause so KV answers keep working. */
   blobs?: BlobStore;
+  /** Workspace directory for Cursor's previousWorkspaceUris (Pi session cwd). */
+  workspaceCwd?: string;
 }
 
 export interface BuiltRequest {
   bytes: Uint8Array;
   blobs: BlobStore;
-}
-
-function truncateUtf8(text: string, maxBytes: number, originalBytes: number): string {
-  const suffix = `\n\n[pi-cursor truncated this tool result from ${originalBytes} bytes to protect the agent context. Use a narrower command, path, or line range.]`;
-  const suffixBytes = Buffer.byteLength(suffix, "utf8");
-  const bytes = Buffer.from(text, "utf8");
-  let end = Math.max(0, maxBytes - suffixBytes);
-  while (end > 0 && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end -= 1;
-  return bytes.subarray(0, end).toString("utf8") + suffix;
-}
-
-function boundToolResultText(content: string): string {
-  const bytes = Buffer.byteLength(content, "utf8");
-  return bytes > MAX_TOOL_RESULT_TEXT_BYTES ? truncateUtf8(content, MAX_TOOL_RESULT_TEXT_BYTES, bytes) : content;
 }
 
 function encodeVarint(value: number): number[] {
@@ -174,43 +161,27 @@ function stepBytes(step: TurnStep): Uint8Array {
   const toolName = step.toolName || "tool";
   let resultMessage: McpToolResult | undefined;
   if (step.result) {
-    if (step.result.isError) {
+    const bounded = boundToolResultPayload(step.result);
+    if (bounded.isError) {
       resultMessage = create(McpToolResultSchema, {
-        result: { case: "error", value: create(McpToolErrorSchema, { error: boundToolResultText(step.result.content) }) },
+        result: { case: "error", value: create(McpToolErrorSchema, { error: bounded.content }) },
       });
     } else {
-      const text = boundToolResultText(step.result.content);
       const items = [];
-      if (text.length > 0) {
+      if (bounded.content.length > 0) {
         items.push(
           create(McpToolResultContentItemSchema, {
-            content: { case: "text" as const, value: create(McpTextContentSchema, { text }) },
+            content: { case: "text" as const, value: create(McpTextContentSchema, { text: bounded.content }) },
           }),
         );
       }
-      let usedBytes = Buffer.byteLength(text, "utf8");
-      let droppedImages = 0;
-      for (const image of step.result.images) {
-        const imageBytes = image.data.byteLength + Buffer.byteLength(image.mimeType, "utf8");
-        if (usedBytes + imageBytes > MAX_TOOL_RESULT_TOTAL_BYTES) {
-          droppedImages += 1;
-          continue;
-        }
+      for (const image of bounded.images) {
         items.push(
           create(McpToolResultContentItemSchema, {
             content: {
               case: "image" as const,
               value: create(McpImageContentSchema, { data: image.data, mimeType: image.mimeType }),
             },
-          }),
-        );
-        usedBytes += imageBytes;
-      }
-      if (droppedImages > 0) {
-        const notice = `[pi-cursor omitted ${droppedImages} oversized tool image(s) to protect the transport.]`;
-        items.push(
-          create(McpToolResultContentItemSchema, {
-            content: { case: "text" as const, value: create(McpTextContentSchema, { text: notice }) },
           }),
         );
       }
@@ -308,7 +279,7 @@ export function buildRunRequest(input: BuildRequestInput): BuiltRequest {
     turns: turnBlobIds,
     todos: [],
     pendingToolCalls: [],
-    previousWorkspaceUris: [pathToFileURL(process.cwd()).href],
+    previousWorkspaceUris: [pathToFileURL(input.workspaceCwd?.trim() || process.cwd()).href],
     mode: 1,
     fileStates: {},
     fileStatesV2: {},

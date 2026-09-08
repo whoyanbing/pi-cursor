@@ -16,14 +16,14 @@
   {
     "id": "claude-4-sonnet-1m-thinking",
     "name": "Sonnet 4 1M Thinking",
-    "reasoning": false,
+    "reasoning": true,
     "contextWindow": 1000000,
     "maxTokens": 64000
   },
   {
     "id": "claude-4-sonnet-thinking",
     "name": "Sonnet 4 Thinking",
-    "reasoning": false,
+    "reasoning": true,
     "contextWindow": 200000,
     "maxTokens": 64000
   },
@@ -37,7 +37,7 @@
   {
     "id": "claude-4.5-opus-high-thinking",
     "name": "Opus 4.5 Thinking",
-    "reasoning": false,
+    "reasoning": true,
     "contextWindow": 200000,
     "maxTokens": 64000
   },
@@ -51,7 +51,7 @@
   {
     "id": "claude-4.5-sonnet-thinking",
     "name": "Sonnet 4.5 1M Thinking",
-    "reasoning": false,
+    "reasoning": true,
     "contextWindow": 1000000,
     "maxTokens": 64000
   },
@@ -65,7 +65,7 @@
   {
     "id": "claude-4.6-opus-high-thinking",
     "name": "Opus 4.6 1M Thinking",
-    "reasoning": false,
+    "reasoning": true,
     "contextWindow": 1000000,
     "maxTokens": 128000
   },
@@ -79,7 +79,7 @@
   {
     "id": "claude-4.6-opus-max-thinking",
     "name": "Opus 4.6 1M Max Thinking",
-    "reasoning": false,
+    "reasoning": true,
     "contextWindow": 1000000,
     "maxTokens": 128000
   },
@@ -673,7 +673,7 @@
   {
     "id": "claude-4.6-sonnet-medium-thinking",
     "name": "Sonnet 4.6 1M Thinking",
-    "reasoning": false,
+    "reasoning": true,
     "contextWindow": 1000000,
     "maxTokens": 128000
   },
@@ -1149,7 +1149,7 @@
   {
     "id": "grok-4-20-thinking",
     "name": "Grok 4.20 Thinking",
-    "reasoning": false,
+    "reasoning": true,
     "contextWindow": 200000,
     "maxTokens": 64000
   },

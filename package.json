@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "keywords": ["pi-package", "pi", "cursor", "ai", "provider"],
-  "files": ["src", "proto", "README.md"],
+  "files": ["src", "proto", "README.md", "LICENSE"],
   "scripts": {
     "check": "tsc --noEmit",
     "test": "vitest run",
@@ -19,8 +19,8 @@
     "@bufbuild/protobuf": "^2.0.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.84.4"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.72.0",

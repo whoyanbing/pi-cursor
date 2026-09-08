@@ -38,6 +38,8 @@ export interface Bridge {
   baseUrl: string;
   pausedAt: number;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
+  /** Set when the Run stream dies while parked waiting for Pi tool results. */
+  parkError?: string;
 }
 
 const bridges = new Map<string, Bridge>();
@@ -88,7 +90,14 @@ export function bridgeMatchesResults(bridge: Bridge, answeredToolCallIds: readon
 /** Sweep expired/dead bridges (called opportunistically on each stream start). */
 export function sweepBridges(): void {
   for (const [id, bridge] of [...bridges]) {
-    if (isBridgeExpired(bridge) || !bridge.rpc.alive) {
+    if (isBridgeExpired(bridge)) {
+      bridges.delete(id);
+      destroyBridge(bridge);
+      continue;
+    }
+    // Dead streams with a parkError stay until the next call surfaces it.
+    if (bridge.parkError) continue;
+    if (!bridge.rpc.alive) {
       bridges.delete(id);
       destroyBridge(bridge);
     }

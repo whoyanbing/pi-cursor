@@ -75,7 +75,8 @@ Credential cascade (first match wins):
 3. macOS Keychain (tokens saved by the Cursor CLI: `cursor-access-token` / `cursor-refresh-token`)
 4. Cursor IDE local state (`globalStorage/state.vscdb`)
 
-Steps 3–4 reuse desktop-app credentials; disable with `PI_CURSOR_SYSTEM_CREDENTIALS=0`.
+Steps 3–4 reuse desktop-app credentials. The first session that picks them up
+shows a one-time notice; disable reuse with `PI_CURSOR_SYSTEM_CREDENTIALS=0`.
 
 ## Commands
 
@@ -109,7 +110,7 @@ time. Results cache to `~/.pi/agent/cursor-models-cache.json` (6h TTL).
 | `CURSOR_ACCESS_TOKEN` | — | Bypass login with a raw access token |
 | `PI_CURSOR_AGENT_URL` / `CURSOR_AGENT_URL` | `https://agentn.us.api5.cursor.sh` | Override the agent endpoint (CLI config cache is consulted first otherwise) |
 | `PI_CURSOR_CLIENT_VERSION` | `cli-2026.05.01-eea359f` | `x-cursor-client-version` header |
-| `PI_CURSOR_SYSTEM_CREDENTIALS` | allowed | Set `0` to skip Keychain/IDE credential reuse |
+| `PI_CURSOR_SYSTEM_CREDENTIALS` | allowed | Set `0` to skip Keychain/IDE credential reuse. First use otherwise notifies once. |
 | `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS` | `180000` | Silence watchdog; `0` disables |
 | `PI_CURSOR_CONNECT_TIMEOUT_MS` | `30000` | HTTP/2 handshake timeout; `0` disables. Timed-out runs retry once on a fresh session |
 | `PI_CURSOR_BRIDGE_PAUSE_MS` | `900000` | Max time a parked bridge waits for tool results |

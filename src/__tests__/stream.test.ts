@@ -592,6 +592,39 @@ describe("streamCursor", () => {
     expect(message.usage.totalTokens).toBe(message.usage.input + 11);
   });
 
+  it("parks one turn with parallel MCP execs from the same tick", async () => {
+    const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("run")]), { apiKey: "t", sessionId }));
+    const stream = lastStream();
+    stream.execMcp(1, "exec-1", "call_1", "bash", { command: "ls" });
+    stream.execMcp(2, "exec-2", "call_2", "bash", { command: "pwd" });
+
+    const message = doneMessage(await eventsPromise);
+    expect(message.stopReason).toBe("toolUse");
+    expect(message.content.filter((block) => block.type === "toolCall")).toEqual([
+      { type: "toolCall", id: "call_1", name: "bash", arguments: { command: "ls" } },
+      { type: "toolCall", id: "call_2", name: "bash", arguments: { command: "pwd" } },
+    ]);
+    expect([...peekBridge(conversationIdFor([user("run")]))!.pendingExecs.keys()]).toEqual(["call_1", "call_2"]);
+  });
+
+  it("surfaces a park-time transport error on the next call", async () => {
+    const first = collect(streamCursor(makeModel(), makeContext([user("run")]), { apiKey: "t", sessionId }));
+    const stream = lastStream();
+    stream.execMcp(1, "exec-1", "call_1", "bash", {});
+    await first;
+    stream.transportError("socket hang up");
+
+    const resumed = makeContext([
+      user("run"),
+      assistantToolCall("call_1", "bash", {}),
+      toolResult("call_1", "bash", "ok"),
+    ]);
+    const second = collect(streamCursor(makeModel(), resumed, { apiKey: "t", sessionId }));
+    expect(transport.streams).toHaveLength(1);
+    const message = errorMessage(await second);
+    expect(message.errorMessage).toMatch(/socket hang up/);
+  });
+
   it("resumes a parked bridge with the tool result inline", async () => {
     const context = makeContext([user("run ls")]);
     const first = collect(streamCursor(makeModel(), context, { apiKey: "t", sessionId }));

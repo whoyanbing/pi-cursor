@@ -6,10 +6,10 @@
  */
 import type { OAuthCredentials } from "@earendil-works/pi-ai";
 import { registerApiProvider } from "@earendil-works/pi-ai/compat";
-import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
+import { sessionEntryToContextMessages, type ExtensionAPI, type ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { CURSOR_API, PROVIDER_ID, PROVIDER_NAME, getAgentUrl } from "./config.js";
 import { loginCursor, refreshAccessToken } from "./auth/oauth.js";
-import { resolveCredential } from "./auth/credentials.js";
+import { consumeSystemCredentialNotice, resolveCredential } from "./auth/credentials.js";
 import { registerCursorCommands } from "./commands.js";
 import { shouldCancelThresholdCompact } from "./compaction-guard.js";
 import { cachedModels, startupCatalog, writeCache } from "./models/catalog.js";
@@ -19,6 +19,8 @@ import { processAndRegister, toProviderModels } from "./models/processing.js";
 import type { ProcessedModel } from "./models/types.js";
 import { streamCursor } from "./protocol/stream.js";
 import { clearAllUsage, clearUsageForSession, estimatePromptTokens } from "./protocol/usage.js";
+import { closeAllSessions } from "./transport/h2.js";
+import { clearWorkspaceCwds, forgetSessionCwd, rememberSessionCwd } from "./workspace.js";
 
 const COMPACT_CONTEXT_STATUS = "pi-cursor-compact-context";
 let lastRegisteredModels: ProcessedModel[] = [];
@@ -28,10 +30,16 @@ function clearSessionRuntime(sessionId: string | undefined): void {
   if (id) {
     clearBridgesForSession(id);
     clearUsageForSession(id);
+    forgetSessionCwd(id);
   } else {
     clearAllBridges();
     clearAllUsage();
+    clearWorkspaceCwds();
   }
+}
+
+export function shouldCloseTransportOnShutdown(reason: string): boolean {
+  return reason === "quit" || reason === "reload";
 }
 
 function registerCursorApi(): void {
@@ -41,7 +49,7 @@ function registerCursorApi(): void {
   );
 }
 
-export default async function (pi: ExtensionAPI): Promise<void> {
+export default function (pi: ExtensionAPI): void {
   registerCursorApi();
 
   // Synchronous startup: register the bundled/cached catalog immediately so
@@ -69,7 +77,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     api: CURSOR_API,
     models: toProviderModels(startup),
     oauth,
-    streamSimple: streamCursor as unknown as ProviderConfig["streamSimple"],
+    streamSimple: streamCursor,
     async refreshModels(context) {
       if (!context.allowNetwork || context.signal?.aborted) return toProviderModels(lastRegisteredModels);
       const credential = context.credential;
@@ -107,6 +115,17 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 
   registerCursorCommands(pi, { getLastRegisteredModels: () => lastRegisteredModels });
 
+  pi.on("session_start", async (_event, ctx) => {
+    rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
+    try {
+      await resolveCredential();
+    } catch {
+      // Login is optional at session start.
+    }
+    const notice = consumeSystemCredentialNotice();
+    if (notice) ctx.ui.notify(notice, "info");
+  });
+
   // Pi's between-turn compact check trusts last-assistant usage. Cursor writes
   // the pre-compact prompt size there, so a successful compact still looks like
   // 94%+ and immediately runs again. Skip until usage actually drops, and drop
@@ -123,27 +142,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
     // Pi deliberately reports context as unknown between compaction and the
     // first persisted assistant usage. Show a temporary provider-side estimate
     // in the footer, then remove it after that first sub-turn completes.
-    const messages = ctx.sessionManager.buildContextEntries().flatMap((entry) => {
-      if (entry.type === "message") return [entry.message];
-      const timestamp = Date.parse(entry.timestamp);
-      if (entry.type === "compaction") {
-        return [{ role: "compactionSummary" as const, summary: entry.summary, tokensBefore: entry.tokensBefore, timestamp }];
-      }
-      if (entry.type === "branch_summary") {
-        return [{ role: "branchSummary" as const, summary: entry.summary, fromId: entry.fromId, timestamp }];
-      }
-      if (entry.type === "custom_message") {
-        return [{
-          role: "custom" as const,
-          customType: entry.customType,
-          content: entry.content,
-          display: entry.display,
-          details: entry.details,
-          timestamp,
-        }];
-      }
-      return [];
-    });
+    const messages = ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages);
     const tokens = estimatePromptTokens(ctx.model, {
       systemPrompt: ctx.getSystemPrompt(),
       messages: messages as never,
@@ -171,8 +170,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
   pi.on("model_select", (_event, ctx) => {
     ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
   });
-  pi.on("session_shutdown", (_event, ctx) => {
+  pi.on("session_shutdown", (event, ctx) => {
     ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
     clearSessionRuntime(ctx.sessionManager.getSessionId());
+    if (shouldCloseTransportOnShutdown(event.reason)) {
+      clearWorkspaceCwds();
+      closeAllSessions();
+    }
   });
 }

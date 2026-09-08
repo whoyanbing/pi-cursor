@@ -65,4 +65,14 @@ describe("BlobStore", () => {
     expect(store.getByIdBytes(keep)).toEqual(new TextEncoder().encode("keep-me"));
     expect(store.entries).toBeLessThanOrEqual(MAX_STORE_ENTRIES);
   });
+
+  it("throws instead of evicting client-put blobs when the store overflows", () => {
+    const store = new BlobStore({ maxStoreBytes: 100, maxStoreEntries: 4 });
+    store.put(new TextEncoder().encode("one"));
+    store.put(new TextEncoder().encode("two"));
+    store.put(new TextEncoder().encode("three"));
+    store.put(new TextEncoder().encode("four"));
+    expect(() => store.put(new TextEncoder().encode("five"))).toThrow(/dangling blob id/);
+    expect(store.entries).toBe(4);
+  });
 });

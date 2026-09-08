@@ -222,4 +222,19 @@ describe("conversation state defaults", () => {
     expect(state.selfSummaryCount).toBe(0);
     expect(toBinary(ConversationStateStructureSchema, state).byteLength).toBeGreaterThan(0);
   });
+
+  it("uses the provided workspace cwd", () => {
+    const built = buildRunRequest({
+      systemPrompt: "sys",
+      completedTurns: [],
+      actionText: "hi",
+      toolDefinitions: [],
+      routing: { modelId: "auto" },
+      conversationId: "c",
+      workspaceCwd: "/tmp/pi-cursor-workspace",
+    });
+    const client = fromBinary(AgentClientMessageSchema, built.bytes);
+    if (client.message.case !== "runRequest") throw new Error("expected runRequest");
+    expect(client.message.value.conversationState!.previousWorkspaceUris[0]).toBe("file:///tmp/pi-cursor-workspace");
+  });
 });

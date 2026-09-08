@@ -19,16 +19,25 @@ export class BlobStore {
   private readonly order: string[] = [];
   /** Client-put ids that the current Run request still references. Never evict these. */
   private readonly pinned = new Set<string>();
+  private readonly maxBlobBytes: number;
+  private readonly maxStoreBytes: number;
+  private readonly maxStoreEntries: number;
   droppedCount = 0;
   droppedBytes = 0;
 
+  constructor(limits?: { maxBlobBytes?: number; maxStoreBytes?: number; maxStoreEntries?: number }) {
+    this.maxBlobBytes = limits?.maxBlobBytes ?? MAX_BLOB_BYTES;
+    this.maxStoreBytes = limits?.maxStoreBytes ?? MAX_STORE_BYTES;
+    this.maxStoreEntries = limits?.maxStoreEntries ?? MAX_STORE_ENTRIES;
+  }
+
   /** Store `data` and return its 32-byte SHA-256 blob id. */
   put(data: Uint8Array): Uint8Array {
-    if (data.byteLength > MAX_BLOB_BYTES) {
+    if (data.byteLength > this.maxBlobBytes) {
       this.droppedCount += 1;
       this.droppedBytes += data.byteLength;
       throw new Error(
-        `pi-cursor blob exceeds ${MAX_BLOB_BYTES} bytes (${data.byteLength}); refusing to send a dangling blob id`,
+        `pi-cursor blob exceeds ${this.maxBlobBytes} bytes (${data.byteLength}); refusing to send a dangling blob id`,
       );
     }
     const id = new Uint8Array(createHash("sha256").update(data).digest());
@@ -39,6 +48,18 @@ export class BlobStore {
       this.order.push(key);
       this.totalBytes += data.byteLength;
       this.evict();
+      if (this.totalBytes > this.maxStoreBytes || this.order.length > this.maxStoreEntries) {
+        this.blobs.delete(key);
+        this.pinned.delete(key);
+        const index = this.order.lastIndexOf(key);
+        if (index >= 0) this.order.splice(index, 1);
+        this.totalBytes -= data.byteLength;
+        this.droppedCount += 1;
+        this.droppedBytes += data.byteLength;
+        throw new Error(
+          `pi-cursor blob store would exceed ${this.maxStoreBytes} bytes / ${this.maxStoreEntries} entries; refusing to send a dangling blob id`,
+        );
+      }
     }
     return id;
   }
@@ -54,7 +75,7 @@ export class BlobStore {
 
   /** Record a blob the server pushed to us. Returns false when oversized. */
   setFromServer(id: Uint8Array, data: Uint8Array): boolean {
-    if (data.byteLength > MAX_BLOB_BYTES) {
+    if (data.byteLength > this.maxBlobBytes) {
       this.droppedCount += 1;
       this.droppedBytes += data.byteLength;
       return false;
@@ -78,7 +99,7 @@ export class BlobStore {
   }
 
   private evict(): void {
-    while (this.totalBytes > MAX_STORE_BYTES || this.order.length > MAX_STORE_ENTRIES) {
+    while (this.totalBytes > this.maxStoreBytes || this.order.length > this.maxStoreEntries) {
       const index = this.order.findIndex((key) => !this.pinned.has(key));
       if (index < 0) break;
       const key = this.order.splice(index, 1)[0];

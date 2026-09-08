@@ -18,6 +18,7 @@ interface RawModel {
 const credentialsMock = vi.hoisted(() => ({
   resolveAccessToken: vi.fn(async () => ""),
   resolveCredential: vi.fn<() => Promise<{ accessToken: string; source: string } | null>>(async () => null),
+  consumeSystemCredentialNotice: vi.fn<() => string | undefined>(() => undefined),
 }));
 vi.mock("../auth/credentials.js", () => credentialsMock);
 
@@ -29,6 +30,7 @@ const discoveryMock = vi.hoisted(() => ({
 vi.mock("../models/discovery.js", () => discoveryMock);
 
 import { getApiProvider, streamSimple, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
+import { clearWorkspaceCwds } from "../workspace.js";
 
 interface CommandEntry {
   description?: string;
@@ -61,6 +63,7 @@ afterEach(() => {
   rmSync(join(homedir(), ".pi", "agent", "cursor-models-cache.json"), { force: true });
   vi.clearAllMocks();
   vi.resetModules();
+  clearWorkspaceCwds();
 });
 
 describe("extension registration", () => {
@@ -100,6 +103,7 @@ describe("extension registration", () => {
 
     expect([...pi.commands.keys()].sort()).toEqual(["cursor.doctor", "cursor.model", "cursor.usage"]);
 
+    expect(pi.on).toHaveBeenCalledWith("session_start", expect.any(Function));
     expect(pi.on).toHaveBeenCalledWith("session_before_compact", expect.any(Function));
     expect(pi.on).toHaveBeenCalledWith("session_compact", expect.any(Function));
     expect(pi.on).toHaveBeenCalledWith("turn_end", expect.any(Function));
@@ -232,5 +236,47 @@ describe("extension registration", () => {
       publish: vi.fn(async () => true),
     });
     expect(models.length).toBeGreaterThan(10);
+  });
+
+  it("closes the HTTP/2 pool only on quit and reload", async () => {
+    unregisterApiProviders("pi-cursor");
+    const { default: activate, shouldCloseTransportOnShutdown } = await import("../index.js");
+    expect(shouldCloseTransportOnShutdown("quit")).toBe(true);
+    expect(shouldCloseTransportOnShutdown("reload")).toBe(true);
+    expect(shouldCloseTransportOnShutdown("new")).toBe(false);
+    expect(shouldCloseTransportOnShutdown("fork")).toBe(false);
+
+    const pi = makePi();
+    await activate(pi as never);
+    const call = pi.on.mock.calls.find(([event]) => event === "session_shutdown");
+    if (!call) throw new Error("missing session_shutdown handler");
+    const handler = call[1] as (event: { reason: string }, ctx: unknown) => void;
+    handler(
+      { reason: "quit" },
+      { sessionManager: { getSessionId: () => "session-1" }, ui: { setStatus: vi.fn() } },
+    );
+  });
+
+  it("notifies when desktop credentials are reused", async () => {
+    credentialsMock.consumeSystemCredentialNotice.mockReturnValueOnce(
+      "Using Cursor credentials from the macOS Keychain.",
+    );
+    unregisterApiProviders("pi-cursor");
+    const pi = makePi();
+    const { default: activate } = await import("../index.js");
+    await activate(pi as never);
+    const call = pi.on.mock.calls.find(([event]) => event === "session_start");
+    if (!call) throw new Error("missing session_start handler");
+    const handler = call[1] as (event: unknown, ctx: unknown) => Promise<void>;
+    const notify = vi.fn();
+    await handler(
+      {},
+      {
+        cwd: "/tmp/project",
+        sessionManager: { getSessionId: () => "session-1" },
+        ui: { notify },
+      },
+    );
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("Keychain"), "info");
   });
 });

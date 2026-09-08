@@ -37,11 +37,10 @@ import {
 } from "../proto/agent_pb.js";
 import { CONTINUE_TEXT, RUN_RPC, getAgentUrl, heartbeatIntervalMs, streamIdleTimeoutMs } from "../config.js";
 import { encodeFrame, FrameParser, parseErrorPayload } from "../transport/connect.js";
-import { openStream, type RpcStream } from "../transport/h2.js";
+import { openStream } from "../transport/h2.js";
 import { resolveAccessToken } from "../auth/credentials.js";
 import { resolveRouteTarget } from "../models/registry.js";
 import { recordRun } from "../diagnostics.js";
-import { BlobStore } from "./blobs.js";
 import {
   destroyBridge,
   isBridgeExpired,
@@ -66,6 +65,7 @@ import {
   estimatePromptTokens,
   stabilizeInputTokens,
 } from "./usage.js";
+import { resolveWorkspaceCwd } from "../workspace.js";
 
 function emptyUsage(): AssistantMessage["usage"] {
   return {
@@ -299,6 +299,7 @@ interface RunState {
   outputTokens: number;
   lastWorkAt: number;
   watchdog: ReturnType<typeof setInterval> | null;
+  parkQueued: boolean;
 }
 
 function heartbeatFrame(): Uint8Array {
@@ -353,6 +354,52 @@ function stopWatchdog(state: RunState): void {
   state.watchdog = null;
 }
 
+function flushPendingToolCalls(state: RunState): void {
+  const writer = state.writer;
+  const bridge = state.bridge;
+  if (!writer || writer.closed || !bridge) return;
+  const batch = [...bridge.pendingExecs.values()].filter((exec) => !exec.surfaced);
+  if (batch.length === 0) return;
+  for (const exec of batch) {
+    exec.surfaced = true;
+    writer.toolCall(exec);
+  }
+  parkBridge(state);
+}
+
+/** Collect parallel MCP execs that arrive in the same turn before parking. */
+function queuePark(state: RunState): void {
+  if (state.parkQueued) return;
+  if (!state.writer || state.writer.closed) return;
+  state.parkQueued = true;
+  queueMicrotask(() => {
+    state.parkQueued = false;
+    flushPendingToolCalls(state);
+  });
+}
+
+function failParkedBridge(state: RunState, message: string): void {
+  recordRun({ lastError: message });
+  const writer = state.writer;
+  if (writer && !writer.closed) {
+    dropBridge(state);
+    writer.finish("error", message);
+    return;
+  }
+  const bridge = state.bridge;
+  if (!bridge) return;
+  bridge.parkError = message;
+  if (bridge.heartbeatTimer) {
+    clearInterval(bridge.heartbeatTimer);
+    bridge.heartbeatTimer = null;
+  }
+  try {
+    bridge.rpc.destroy();
+  } catch {
+    // Already gone.
+  }
+}
+
 /** Park the bridge: finalize the writer with toolUse and wait for Pi's results. */
 function parkBridge(state: RunState): void {
   const writer = state.writer;
@@ -392,23 +439,20 @@ function attachTransport(state: RunState): void {
       frames = bridge.parser.push(chunk);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      dropBridge(state);
-      state.writer?.finish("error", message);
+      failParkedBridge(state, message);
       return;
     }
     for (const frame of frames) {
       if (frame.endStream) {
         const err = parseErrorPayload(frame.payload);
-        dropBridge(state);
-        state.writer?.finish("error", err.message || err.code || "Cursor ended the stream with an error");
+        failParkedBridge(state, err.message || err.code || "Cursor ended the stream with an error");
         return;
       }
       try {
         handleServerMessage(frame.payload, makeHandlers(state));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        dropBridge(state);
-        state.writer?.finish("error", `Cursor stream handling failed: ${message}`);
+        failParkedBridge(state, `Cursor stream handling failed: ${message}`);
         return;
       }
     }
@@ -417,24 +461,22 @@ function attachTransport(state: RunState): void {
   bridge.rpc.onEnd((info) => {
     if (!info.ok) {
       const detail = info.statusText || info.errorBody || "request failed";
-      dropBridge(state);
-      state.writer?.finish("error", `Cursor RPC failed: HTTP ${info.status} ${detail}`);
+      failParkedBridge(state, `Cursor RPC failed: HTTP ${info.status} ${detail}`);
       return;
     }
     // Clean end without turnEnded: if a writer is live, close it out. A parked
-    // bridge whose stream ended cannot be resumed — drop it silently; the next
-    // call rebuilds from context.
+    // bridge whose stream ended cannot be resumed — keep the error so the next
+    // call surfaces it instead of silently rebuilding.
     if (state.writer) {
       dropBridge(state);
       state.writer.finish("stop");
     } else {
-      dropBridge(state);
+      failParkedBridge(state, "Cursor ended the stream while waiting for tool results.");
     }
   });
 
   bridge.rpc.onError((error) => {
-    dropBridge(state);
-    state.writer?.finish("error", error.message);
+    failParkedBridge(state, error.message);
   });
 }
 
@@ -468,25 +510,23 @@ function makeHandlers(state: RunState): ServerHandlers {
     onTurnEnded() {
       markWork();
       recordRun({ lastTurnEndedAt: Date.now() });
-      dropBridge(state);
-      state.writer?.finish("stop");
+      if (state.writer) {
+        dropBridge(state);
+        state.writer.finish("stop");
+        return;
+      }
+      failParkedBridge(state, "Cursor ended the turn while waiting for tool results.");
     },
     onToolCall(call) {
       markWork();
       const pending: PendingExec = { ...call, surfaced: false };
       bridge.pendingExecs.set(call.toolCallId, pending);
-      const writer = state.writer;
-      if (writer && !writer.closed) {
-        pending.surfaced = true;
-        writer.toolCall(pending);
-        parkBridge(state);
-      }
+      if (state.writer && !state.writer.closed) queuePark(state);
       // No live writer (arrived after a pause): stays pending and is surfaced
       // when the next call resumes the bridge.
     },
     onError(message) {
-      dropBridge(state);
-      state.writer?.finish("error", message);
+      failParkedBridge(state, message);
     },
     onLiveness() {
       markWork();
@@ -560,21 +600,27 @@ export function streamCursor(
 
       const existing = takeBridge(conversationId);
       if (existing) {
+        if (existing.parkError) {
+          const message = existing.parkError;
+          destroyBridge(existing);
+          writer.finish("error", message);
+          return;
+        }
         const resumable =
           parsed.isToolContinuation &&
           !isBridgeExpired(existing) &&
           existing.rpc.alive &&
           bridgeMatchesResults(existing, parsed.answeredToolCallIds);
         if (resumable) {
-          state = { bridge: existing, writer, outputTokens: 0, lastWorkAt: Date.now(), watchdog: null };
+          state = { bridge: existing, writer, outputTokens: 0, lastWorkAt: Date.now(), watchdog: null, parkQueued: false };
           resumeBridge(state, parsed);
           return;
         }
         destroyBridge(existing);
       }
 
-      state = { bridge: null, writer, outputTokens: 0, lastWorkAt: Date.now(), watchdog: null };
-      startFresh(state, parsed, toolDefinitions, conversationId, token, baseUrl, routing);
+      state = { bridge: null, writer, outputTokens: 0, lastWorkAt: Date.now(), watchdog: null, parkQueued: false };
+      startFresh(state, parsed, toolDefinitions, conversationId, token, baseUrl, routing, options?.sessionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       recordRun({ lastError: message });
@@ -607,6 +653,7 @@ function startFresh(
   token: string,
   baseUrl: string,
   routing: ModelRouting,
+  sessionId?: string,
 ): void {
   const actionText = parsed.action.kind === "userMessage" ? parsed.action.text : CONTINUE_TEXT;
   const actionImages: readonly ImagePart[] = parsed.action.kind === "userMessage" ? parsed.action.images : [];
@@ -619,6 +666,7 @@ function startFresh(
     toolDefinitions,
     routing,
     conversationId,
+    workspaceCwd: resolveWorkspaceCwd(sessionId),
   });
 
   const rpc = openStream(baseUrl, { rpcPath: RUN_RPC, token });

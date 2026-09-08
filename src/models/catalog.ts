@@ -14,6 +14,7 @@ import type { CatalogSeed, CursorModel } from "./types.js";
 import seeds from "./catalog.json";
 
 export function seedModels(): CursorModel[] {
+  // `reasoning` in catalog.json is documentation only; grouping infers it from id suffixes.
   return (seeds as CatalogSeed[]).map((seed) => ({
     id: seed.id,
     name: seed.name || seed.id,

@@ -97,7 +97,10 @@ export async function pollForTokens(
   for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt += 1) {
     await sleep(Math.round(delay * pollDelayScale), signal);
     try {
-      const response = await fetch(`${POLL_URL}?uuid=${uuid}&verifier=${verifier}`, {
+      const poll = new URL(POLL_URL);
+      poll.searchParams.set("uuid", uuid);
+      poll.searchParams.set("verifier", verifier);
+      const response = await fetch(poll.toString(), {
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]) : AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (response.status === 404) {

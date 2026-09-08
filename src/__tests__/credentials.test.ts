@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -107,6 +107,13 @@ describe("resolveCredential cascade", () => {
     expect(resolved?.accessToken).toBe(refreshed);
     expect(resolved?.refreshToken).toBe("refresh-new");
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    const persisted = JSON.parse(readFileSync(authFile, "utf8")) as {
+      cursor: { access: string; refresh: string; expires: number; type: string };
+    };
+    expect(persisted.cursor.type).toBe("oauth");
+    expect(persisted.cursor.access).toBe(refreshed);
+    expect(persisted.cursor.refresh).toBe("refresh-new");
+    expect(persisted.cursor.expires).toBeGreaterThan(Date.now());
   });
 
   it("drops credentials when refresh fails on an expired token", async () => {
@@ -157,5 +164,12 @@ describe("systemCredentialsAllowed", () => {
     process.env.PI_CURSOR_SYSTEM_CREDENTIALS = "0";
     const credentials = await loadCredentials();
     expect(credentials.systemCredentialsAllowed()).toBe(false);
+  });
+
+  it("does not notify when the token came from env or pi-oauth", async () => {
+    process.env.CURSOR_ACCESS_TOKEN = jwt(Math.floor(Date.now() / 1000) + 3600);
+    const credentials = await loadCredentials();
+    await credentials.resolveCredential();
+    expect(credentials.consumeSystemCredentialNotice()).toBeUndefined();
   });
 });
