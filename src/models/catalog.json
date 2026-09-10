@@ -4,7 +4,8 @@
     "name": "Auto",
     "reasoning": false,
     "contextWindow": 200000,
-    "maxTokens": 64000
+    "maxTokens": 64000,
+    "requestedModelId": "default"
   },
   {
     "id": "gpt-5.3-codex-low",

@@ -209,21 +209,10 @@ function waitForHandshake(
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
-      try {
-        entry.session.off("remoteSettings", onReady);
-      } catch {
-        // Session already torn down.
-      }
-      try {
-        entry.session.off("close", onDead);
-      } catch {
-        // Session already torn down.
-      }
-      try {
-        entry.session.off("error", onDead);
-      } catch {
-        // Session already torn down.
-      }
+      // EventEmitter.off never throws, even after teardown.
+      entry.session.off("remoteSettings", onReady);
+      entry.session.off("close", onDead);
+      entry.session.off("error", onDead);
       if (timer) clearTimeout(timer);
       try {
         entry.session.setTimeout(0);

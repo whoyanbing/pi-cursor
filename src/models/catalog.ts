@@ -20,6 +20,7 @@ export function seedModels(): CursorModel[] {
     name: seed.name || seed.id,
     contextWindow: seed.contextWindow ?? inferContextWindow(seed.id, seed.name ?? ""),
     maxTokens: seed.maxTokens ?? inferMaxOutputTokens(seed.id, seed.name ?? ""),
+    ...(seed.requestedModelId ? { requestedModelId: seed.requestedModelId } : {}),
   }));
 }
 

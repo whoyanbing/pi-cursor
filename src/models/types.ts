@@ -44,4 +44,6 @@ export interface CatalogSeed {
   reasoning?: boolean;
   contextWindow?: number;
   maxTokens?: number;
+  /** Wire id when it differs from the Pi-facing id (e.g. `auto` -> `default`). */
+  requestedModelId?: string;
 }

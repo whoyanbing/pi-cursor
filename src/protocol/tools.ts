@@ -45,15 +45,18 @@ const NATIVE_TOOL_EQUIVALENTS: Record<string, string[]> = {
   grepArgs: ["grep"],
   writeArgs: ["write", "edit"],
   deleteArgs: ["bash", "edit"],
-  shellArgs: ["bash", "shell", "exec", "run"],
+  shellArgs: ["bash", "shell", "exec"],
   shellStreamArgs: ["bash", "shell", "exec"],
   backgroundShellSpawnArgs: ["bash", "shell", "exec"],
   writeShellStdinArgs: ["bash", "shell", "exec"],
-  fetchArgs: ["web_search", "webfetch", "fetch", "tavily_search", "search"],
+  fetchArgs: ["web_search", "webfetch", "fetch", "tavily_search"],
 };
 
-/** Web-capable MCP tools, for the web-search interaction fallback. */
-const WEB_TOOL_CANDIDATES = ["web_search", "webfetch", "fetch", "tavily_search", "search"];
+/**
+ * Web-capable MCP tools, for the web-search interaction fallback. Generic
+ * names like `search` are deliberately excluded: they usually mean code search.
+ */
+const WEB_TOOL_CANDIDATES = ["web_search", "webfetch", "fetch", "tavily_search"];
 
 /** Case-insensitive lookup that returns Pi's actual tool name (casing intact). */
 export function findPiTool(
