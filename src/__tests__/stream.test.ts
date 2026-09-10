@@ -403,9 +403,9 @@ describe("streamCursor", () => {
     await eventsPromise;
   });
 
-  it("falls back to the default raw id for an unsupported level", async () => {
+  it("clamps an unsupported level to the nearest supported raw id", async () => {
     const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("hi")]), { apiKey: "t", sessionId, reasoning: "xhigh" }));
-    expect(runRequestOf(lastStream()).requestedModel?.modelId).toBe("gpt-5");
+    expect(runRequestOf(lastStream()).requestedModel?.modelId).toBe("gpt-5-high");
     lastStream().turnEnded();
     await eventsPromise;
   });

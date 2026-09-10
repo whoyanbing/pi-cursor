@@ -67,7 +67,8 @@ export function diagnosticsReport(tokenSource = lastCredentialSource() as string
     `commands=/cursor.model /cursor.usage /cursor.doctor`,
     "hint=On stalls check lastError; handshake timeouts retry once on a fresh HTTP/2 session.",
     "hint=Tune PI_CURSOR_CONNECT_TIMEOUT_MS (handshake) and PI_CURSOR_STREAM_IDLE_TIMEOUT_MS (silence).",
-    "hint=On auth errors re-run /login cursor or check PI_CURSOR_SYSTEM_CREDENTIALS.",
+    "hint=On auth errors re-run /login cursor.",
+    "sampling=server-controlled (Cursor protocol has no temperature/top_p; pi sampling params are ignored).",
   ];
   return lines.join("\n");
 }

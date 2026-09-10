@@ -5,7 +5,7 @@
  * available without network access. Bundled seeds cover the common lineup;
  * the cache (written by discovery) overrides them until it goes stale.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { MODEL_CACHE_FILE, MODEL_CACHE_TTL_MS } from "../config.js";
@@ -33,12 +33,20 @@ export function cachePath(): string {
   return join(homedir(), ".pi", "agent", MODEL_CACHE_FILE);
 }
 
+let memCache: { mtimeMs: number; data: CacheFile | null } | null = null;
 function readCache(): CacheFile | null {
   try {
-    if (!existsSync(cachePath())) return null;
-    return JSON.parse(readFileSync(cachePath(), "utf8")) as CacheFile;
+    if (!existsSync(cachePath())) {
+      memCache = null;
+      return null;
+    }
+    const mtimeMs = statSync(cachePath()).mtimeMs;
+    if (memCache && memCache.mtimeMs === mtimeMs) return memCache.data;
+    const data = JSON.parse(readFileSync(cachePath(), "utf8")) as CacheFile;
+    memCache = { mtimeMs, data };
+    return data;
   } catch {
-    return null;
+    return memCache?.data ?? null;
   }
 }
 

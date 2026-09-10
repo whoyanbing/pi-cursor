@@ -28,7 +28,7 @@ import type {
   ThinkingContent,
   ToolCall,
 } from "@earendil-works/pi-ai";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { create, toBinary } from "@bufbuild/protobuf";
 import {
   AgentClientMessageSchema,
@@ -579,7 +579,8 @@ export function streamCursor(
   void (async () => {
     try {
       const parsed = parseConversation(context);
-      const toolDefinitions = buildToolDefinitions(context.tools);
+      // Cursor protocol has no tool-choice flag; none means send no tools at all.
+      const toolDefinitions = options?.toolChoice === "none" ? [] : buildToolDefinitions(context.tools);
       const conversationId = stableConversationId(options, parsed, model.id);
       const priorInput = contextInputTokens(context, model);
       if (priorInput > 0) stabilizeInputTokens(conversationId, priorInput);
@@ -593,7 +594,9 @@ export function streamCursor(
       if (!token) {
         throw new Error("Not logged in to Cursor. Run /login cursor, or set CURSOR_ACCESS_TOKEN.");
       }
-      const routing = resolveRouting(model, options);
+      const { routing, rawId } = resolveRouting(model, options);
+      // pi-ai<0.85 lacks the field; pi>=0.85 reads it for the thinking badge.
+      (writer.output as { providerThinkingLevel?: string }).providerThinkingLevel = rawId;
       const baseUrl = getAgentUrl();
       // A parked Run still holds its original prompt/tool/model configuration.
       // Rebuild instead of resuming when Pi changes any of those between tools.
@@ -645,8 +648,13 @@ export function streamCursor(
   return stream;
 }
 
-function resolveRouting(model: Model<Api>, options: SimpleStreamOptions | undefined): ModelRouting {
-  const level = options?.reasoning;
+function resolveRouting(
+    model: Model<Api>,
+    options: SimpleStreamOptions | undefined,
+  ): { routing: ModelRouting; rawId: string } {
+  const requested = options?.reasoning;
+  const clamped = requested ? clampThinkingLevel(model, requested) : undefined;
+  const level = clamped === "off" ? undefined : clamped;
   const map = model.thinkingLevelMap as Record<string, string | null> | undefined;
   let levelRawId: string | undefined;
   if (level && map) {
@@ -655,7 +663,10 @@ function resolveRouting(model: Model<Api>, options: SimpleStreamOptions | undefi
     if (typeof mapped === "string" && mapped) levelRawId = mapped;
   }
   const target = resolveRouteTarget(model.id, levelRawId);
-  return { modelId: target.modelId, maxMode: target.maxMode, parameters: target.parameters };
+  return {
+    routing: { modelId: target.modelId, maxMode: target.maxMode, parameters: target.parameters },
+    rawId: target.modelId,
+  };
 }
 
 function startFresh(

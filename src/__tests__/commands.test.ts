@@ -5,7 +5,6 @@ const credentialsMock = vi.hoisted(() => ({
   resolveAccessToken: vi.fn<() => Promise<string>>(),
   resolveCredential: vi.fn<() => Promise<unknown>>(),
   lastCredentialSource: vi.fn(() => "none"),
-  systemCredentialsAllowed: vi.fn(() => true),
   resetCredentialCache: vi.fn(),
 }));
 

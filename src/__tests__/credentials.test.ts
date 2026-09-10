@@ -5,7 +5,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const originalToken = process.env.CURSOR_ACCESS_TOKEN;
-const originalPolicy = process.env.PI_CURSOR_SYSTEM_CREDENTIALS;
 
 function jwt(exp: number): string {
   const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url");
@@ -25,15 +24,12 @@ function clearAuthStore(): void {
 
 beforeEach(() => {
   delete process.env.CURSOR_ACCESS_TOKEN;
-  delete process.env.PI_CURSOR_SYSTEM_CREDENTIALS;
   clearAuthStore();
 });
 
 afterEach(() => {
   if (originalToken === undefined) delete process.env.CURSOR_ACCESS_TOKEN;
   else process.env.CURSOR_ACCESS_TOKEN = originalToken;
-  if (originalPolicy === undefined) delete process.env.PI_CURSOR_SYSTEM_CREDENTIALS;
-  else process.env.PI_CURSOR_SYSTEM_CREDENTIALS = originalPolicy;
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.resetModules();
@@ -67,7 +63,6 @@ describe("resolveCredential cascade", () => {
 
   it("returns null when no source has a token", async () => {
     clearAuthStore();
-    process.env.PI_CURSOR_SYSTEM_CREDENTIALS = "0";
     const credentials = await loadCredentials();
     const resolved = await credentials.resolveCredential();
     expect(resolved).toBeNull();
@@ -82,7 +77,6 @@ describe("resolveCredential cascade", () => {
     process.env.CURSOR_ACCESS_TOKEN = "replacement";
     expect((await credentials.resolveCredential())?.accessToken).toBe("replacement");
     delete process.env.CURSOR_ACCESS_TOKEN;
-    process.env.PI_CURSOR_SYSTEM_CREDENTIALS = "0";
     expect(await credentials.resolveCredential()).toBeNull();
   });
 
@@ -233,22 +227,3 @@ describe("OAuth store lifecycle", () => {
   });
 });
 
-describe("systemCredentialsAllowed", () => {
-  it("is allowed by default", async () => {
-    const credentials = await loadCredentials();
-    expect(credentials.systemCredentialsAllowed()).toBe(true);
-  });
-
-  it("is disabled by PI_CURSOR_SYSTEM_CREDENTIALS=0", async () => {
-    process.env.PI_CURSOR_SYSTEM_CREDENTIALS = "0";
-    const credentials = await loadCredentials();
-    expect(credentials.systemCredentialsAllowed()).toBe(false);
-  });
-
-  it("does not notify when the token came from env or pi-oauth", async () => {
-    process.env.CURSOR_ACCESS_TOKEN = jwt(Math.floor(Date.now() / 1000) + 3600);
-    const credentials = await loadCredentials();
-    await credentials.resolveCredential();
-    expect(credentials.consumeSystemCredentialNotice()).toBeUndefined();
-  });
-});

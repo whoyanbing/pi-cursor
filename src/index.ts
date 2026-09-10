@@ -9,7 +9,7 @@ import { registerApiProvider } from "@earendil-works/pi-ai/compat";
 import { sessionEntryToContextMessages, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CURSOR_API, PROVIDER_ID, PROVIDER_NAME, getAgentUrl, prewarmClientVersion } from "./config.js";
 import { loginCursor, refreshAccessToken } from "./auth/oauth.js";
-import { consumeSystemCredentialNotice, resolveCredential } from "./auth/credentials.js";
+import { resolveCredential } from "./auth/credentials.js";
 import { registerCursorCommands } from "./commands.js";
 import { shouldCancelThresholdCompact } from "./compaction-guard.js";
 import { cachedModels, startupCatalog, writeCache } from "./models/catalog.js";
@@ -24,6 +24,10 @@ import { closeAllSessions } from "./transport/h2.js";
 import { clearWorkspaceCwds, forgetSessionCwd, rememberSessionCwd } from "./workspace.js";
 
 const COMPACT_CONTEXT_STATUS = "pi-cursor-compact-context";
+
+function clearCompactStatus(ctx: { ui: { setStatus: (key: string, text: string | undefined) => void } }): void {
+  ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
+}
 let lastRegisteredModels: ProcessedModel[] = [];
 
 function clearSessionRuntime(sessionId: string | undefined): void {
@@ -143,8 +147,6 @@ export default function (pi: ExtensionAPI): void {
     } catch {
       // Login is optional at session start.
     }
-    const notice = consumeSystemCredentialNotice();
-    if (notice) ctx.ui.notify(notice, "info");
   });
 
   // Pi's between-turn compact check trusts last-assistant usage. Cursor writes
@@ -156,7 +158,7 @@ export default function (pi: ExtensionAPI): void {
     if (shouldCancelThresholdCompact(event, ctx.model?.provider)) return { cancel: true };
   });
   pi.on("session_compact", (_event, ctx) => {
-    ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
+    clearCompactStatus(ctx);
     if (ctx.model?.provider !== PROVIDER_ID) return;
     clearSessionRuntime(ctx.sessionManager.getSessionId());
 
@@ -182,17 +184,17 @@ export default function (pi: ExtensionAPI): void {
     if (event.message.stopReason === "error" || event.message.stopReason === "aborted") return;
     const usage = event.message.usage;
     if ((usage.totalTokens ?? 0) <= 0) return;
-    ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
+    clearCompactStatus(ctx);
   });
   pi.on("session_tree", (_event, ctx) => {
-    ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
+    clearCompactStatus(ctx);
     clearSessionRuntime(ctx.sessionManager.getSessionId());
   });
   pi.on("model_select", (_event, ctx) => {
-    ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
+    clearCompactStatus(ctx);
   });
   pi.on("session_shutdown", (event, ctx) => {
-    ctx.ui.setStatus(COMPACT_CONTEXT_STATUS, undefined);
+    clearCompactStatus(ctx);
     clearSessionRuntime(ctx.sessionManager.getSessionId());
     if (shouldCloseTransportOnShutdown(event.reason)) {
       clearWorkspaceCwds();

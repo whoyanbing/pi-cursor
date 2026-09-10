@@ -9,7 +9,6 @@ import { getApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/co
 const credentialsMock = vi.hoisted(() => ({
   resolveAccessToken: vi.fn(async () => ""),
   resolveCredential: vi.fn<(...args: unknown[]) => Promise<{ accessToken: string; source: string } | null>>(async () => null),
-  consumeSystemCredentialNotice: vi.fn<() => string | undefined>(() => undefined),
 }));
 vi.mock("../auth/credentials.js", () => credentialsMock);
 
@@ -101,14 +100,14 @@ describe("extension registration", () => {
     expect((await runtime.getAvailable("cursor")).length).toBeGreaterThan(10);
   });
 
-  it("resolves desktop credentials without reading or refreshing Pi's store", async () => {
-    credentialsMock.resolveCredential.mockResolvedValue({ accessToken: "desktop-token", source: "keychain" });
+  it("resolves env credentials without reading or refreshing Pi's store", async () => {
+    credentialsMock.resolveCredential.mockResolvedValue({ accessToken: "env-token", source: "env" });
     const { provider } = await activate();
     const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
     runtime.registerNativeProvider(provider);
-    expect((await runtime.checkAuth("cursor"))?.source).toBe("keychain");
+    expect((await runtime.checkAuth("cursor"))?.source).toBe("env");
     expect(credentialsMock.resolveCredential).toHaveBeenCalledWith(expect.objectContaining({ skipPiStore: true, refresh: false }));
-    expect((await runtime.getAuth("cursor"))?.auth.apiKey).toBe("desktop-token");
+    expect((await runtime.getAuth("cursor"))?.auth.apiKey).toBe("env-token");
   });
 
   it("leaves stored OAuth refresh and persistence to Pi", async () => {
@@ -207,14 +206,5 @@ describe("extension registration", () => {
     const { pi } = await activate();
     const handler = pi.on.mock.calls.find(([event]) => event === "session_shutdown")![1] as (event: unknown, ctx: unknown) => void;
     handler({ reason: "quit" }, { sessionManager: { getSessionId: () => "session-1" }, ui: { setStatus: vi.fn() } });
-  });
-
-  it("notifies when desktop credentials are reused", async () => {
-    credentialsMock.consumeSystemCredentialNotice.mockReturnValueOnce("Using Cursor credentials from the macOS Keychain.");
-    const { pi } = await activate();
-    const handler = pi.on.mock.calls.find(([event]) => event === "session_start")![1] as (event: unknown, ctx: unknown) => Promise<void>;
-    const notify = vi.fn();
-    await handler({}, { cwd: "/tmp/project", sessionManager: { getSessionId: () => "session-1" }, ui: { notify } });
-    expect(notify).toHaveBeenCalledWith(expect.stringContaining("Keychain"), "info");
   });
 });

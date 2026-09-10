@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { fetchCursorUsage, formatUsd, type CursorUsageSummary } from "./auth/usage.js";
 import { DASHBOARD_URL, PROVIDER_ID, getAgentUrl } from "./config.js";
 import { diagnosticsReport } from "./diagnostics.js";
+import { cacheInfo } from "./models/catalog.js";
 import type { ProcessedModel } from "./models/types.js";
 
 export interface CursorCommandOptions {
@@ -148,7 +149,9 @@ export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandO
     handler: async (args, ctx) => {
       const all = /\ball\b/i.test(args ?? "");
       const filter = (args ?? "").replace(/\ball\b/i, "");
-      emit(ctx, formatModelList(options.getLastRegisteredModels(), filter, all));
+      const cache = cacheInfo();
+      const age = cache.savedAt === null ? "static fallback (no cache file)" : `cache age ${Math.round((Date.now() - cache.savedAt) / 1000)}s, stale=${cache.stale ? "yes" : "no"}`;
+      emit(ctx, `${formatModelList(options.getLastRegisteredModels(), filter, all)}\n\n[${age}]`);
     },
   });
 

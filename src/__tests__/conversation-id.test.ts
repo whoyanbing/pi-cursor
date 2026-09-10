@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseConversation } from "../protocol/context.js";
-import { buildConversationId, conversationFingerprint } from "../protocol/conversation-id.js";
+import { __clearConversationIdCacheForTests, buildConversationId, conversationFingerprint } from "../protocol/conversation-id.js";
 import type { Context } from "@earendil-works/pi-ai";
 
 function user(text: string): Context["messages"][number] {
@@ -107,3 +107,17 @@ describe("buildConversationId", () => {
     expect(conversationFingerprint(after)).not.toBe(conversationFingerprint(before));
   });
 });
+
+describe("buildConversationId without sessionId", () => {
+  it("reuses the id in-process and rotates prompts independently", async () => {
+    __clearConversationIdCacheForTests();
+    const { parseConversation } = await import("../protocol/context.js");
+    const a = parseConversation({ systemPrompt: "sys", messages: [user("same")] });
+    const b = parseConversation({ systemPrompt: "sys", messages: [user("same"), assistantText("x")] });
+    const c = parseConversation({ systemPrompt: "sys", messages: [user("other")] });
+    // Same fingerprint (first prompt) reuses; different first prompt splits.
+    expect(buildConversationId(b, "gpt-5")).toBe(buildConversationId(a, "gpt-5"));
+    expect(buildConversationId(c, "gpt-5")).not.toBe(buildConversationId(a, "gpt-5"));
+  });
+});
+
