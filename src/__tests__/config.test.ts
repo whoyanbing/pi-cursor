@@ -8,6 +8,7 @@ import {
   normalizeBaseUrl,
   readCliAgentUrl,
   resetAgentUrlCache,
+  resetClientVersionCache,
   streamIdleTimeoutMs,
 } from "../config.js";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
@@ -18,6 +19,7 @@ const envSnapshot = { ...process.env };
 
 beforeEach(() => {
   resetAgentUrlCache();
+  resetClientVersionCache();
   delete process.env.PI_CURSOR_AGENT_URL;
   delete process.env.CURSOR_AGENT_URL;
   process.env.CURSOR_CONFIG_DIR = join(homedir(), ".pi", "agent", "cursor-config-missing");
@@ -26,6 +28,7 @@ beforeEach(() => {
 afterEach(() => {
   process.env = { ...envSnapshot };
   resetAgentUrlCache();
+  resetClientVersionCache();
 });
 
 describe("normalizeBaseUrl", () => {
@@ -142,12 +145,22 @@ describe("getAgentUrl", () => {
 describe("clientVersion", () => {
   it("has a cli-prefixed default", () => {
     delete process.env.PI_CURSOR_CLIENT_VERSION;
+    resetClientVersionCache();
     expect(clientVersion()).toMatch(/^cli-/);
   });
 
   it("honours PI_CURSOR_CLIENT_VERSION", () => {
     process.env.PI_CURSOR_CLIENT_VERSION = "cli-test-123";
     expect(clientVersion()).toBe("cli-test-123");
+  });
+
+  it("does not let the env override poison the probe cache", () => {
+    process.env.PI_CURSOR_CLIENT_VERSION = "cli-test-123";
+    expect(clientVersion()).toBe("cli-test-123");
+    delete process.env.PI_CURSOR_CLIENT_VERSION;
+    resetClientVersionCache();
+    expect(clientVersion()).toMatch(/^cli-/);
+    expect(clientVersion()).not.toBe("cli-test-123");
   });
 });
 

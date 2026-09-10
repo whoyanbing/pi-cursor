@@ -95,6 +95,14 @@ function isUserLikeRole(role: string): boolean {
   );
 }
 
+/** Cap replayed shell output: keep the tail, note the cut. */
+const MAX_BASH_EXECUTION_CHARS = 8000;
+
+function truncateTail(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `[pi-cursor truncated this earlier shell output to the last ${maxChars} chars.]\n…${text.slice(-maxChars)}`;
+}
+
 function userLikeText(message: Message): string {
   const record = message as unknown as {
     summary?: unknown;
@@ -104,7 +112,8 @@ function userLikeText(message: Message): string {
   };
   if (typeof record.summary === "string" && record.summary) return record.summary;
   if (typeof record.command === "string") {
-    const body = typeof record.output === "string" && record.output ? `\n${record.output}` : "";
+    const output = typeof record.output === "string" ? record.output : "";
+    const body = output ? `\n${truncateTail(output, MAX_BASH_EXECUTION_CHARS)}` : "";
     return `Ran \`${record.command}\`${body}`;
   }
   return textFromContent(record.content);

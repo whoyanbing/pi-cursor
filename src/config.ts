@@ -6,6 +6,7 @@
  * locally installed CLI already knows the current one.
  */
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -15,7 +16,7 @@ export const CURSOR_API = "cursor-native";
 
 export const DEFAULT_AGENT_URL = "https://agentn.us.api5.cursor.sh";
 export const AUX_URL = "https://api2.cursor.sh";
-export const DEFAULT_CLIENT_VERSION = "cli-2026.05.01-eea359f";
+export const DEFAULT_CLIENT_VERSION = "cli-2026.08.25-3e8eec8";
 
 export const RUN_RPC = "/agent.v1.AgentService/Run";
 export const USABLE_MODELS_RPC = "/agent.v1.AgentService/GetUsableModels";
@@ -72,7 +73,46 @@ export function connectTimeoutMs(): number {
 }
 
 export function clientVersion(): string {
-  return process.env.PI_CURSOR_CLIENT_VERSION?.trim() || DEFAULT_CLIENT_VERSION;
+  return process.env.PI_CURSOR_CLIENT_VERSION?.trim() || detectedClientVersion();
+}
+
+/** How long a probed CLI version is reused before re-probing. */
+export const CLIENT_VERSION_TTL_MS = 60 * 60_000;
+
+let cachedClientVersion: { value: string; at: number } | null = null;
+
+/** Best-effort `cursor-agent --version` probe (e.g. "2026.08.25-3e8eec8"). */
+function probeCliVersion(): string | undefined {
+  try {
+    const raw = execFileSync("cursor-agent", ["--version"], {
+      encoding: "utf8",
+      timeout: 2_000,
+    }).trim().split("\n")[0]?.trim();
+    if (!raw || !/^\d{4}\.\d{2}\.\d{2}-[0-9a-f]+$/i.test(raw)) return undefined;
+    return `cli-${raw}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Follow the locally installed Cursor CLI so the server sees a current client.
+ * Cursor gates behavior by version; a stale hardcoded default drifts from what
+ * `cursor-agent` itself sends. Env override always wins; failures fall back.
+ */
+function detectedClientVersion(): string {
+  const now = Date.now();
+  if (cachedClientVersion && now - cachedClientVersion.at < CLIENT_VERSION_TTL_MS) {
+    return cachedClientVersion.value;
+  }
+  const value = probeCliVersion() ?? DEFAULT_CLIENT_VERSION;
+  cachedClientVersion = { value, at: now };
+  return value;
+}
+
+/** Drop the CLI version cache (tests and /reload). */
+export function resetClientVersionCache(): void {
+  cachedClientVersion = null;
 }
 
 export function normalizeBaseUrl(value: unknown): string | undefined {

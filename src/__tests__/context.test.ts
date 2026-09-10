@@ -129,6 +129,25 @@ describe("parseConversation", () => {
     expect(step.result?.isError).toBe(true);
   });
 
+  it("truncates long bashExecution output to the tail", () => {
+    const parsed = parseConversation({
+      systemPrompt: "",
+      messages: [
+        {
+          role: "bashExecution",
+          command: "cat big.log",
+          output: `x`.repeat(20_000),
+          timestamp: Date.now(),
+        } as never,
+        user("next"),
+      ],
+    });
+    const text = parsed.completedTurns[0].userText;
+    expect(text).toContain("cat big.log");
+    expect(text.length).toBeLessThan(20_000);
+    expect(text).toMatch(/truncated/i);
+  });
+
   it("parses images from user content blocks", () => {
     const parsed = parseConversation({
       systemPrompt: "",

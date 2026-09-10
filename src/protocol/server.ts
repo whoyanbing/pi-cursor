@@ -63,7 +63,7 @@ import { recordRun } from "../diagnostics.js";
 import { decodeArgs } from "./request.js";
 import type { BlobStore } from "./blobs.js";
 import { piToolName } from "./prompt.js";
-import { nativeToolRejection } from "./tools.js";
+import { findWebTool, nativeToolRejection } from "./tools.js";
 
 export interface PendingToolCall {
   execMsgId: number;
@@ -370,8 +370,13 @@ function handleExec(h: ServerHandlers, exec: { id: number; execId: string; messa
 }
 
 function handleInteractionQuery(h: ServerHandlers, query: { id: number; query: { case: string; value: unknown } }): void {
-  const unsupported = `Pi's Cursor provider does not support the ${query.query.case} interaction query.`;
   if (query.query.case === "askQuestionInteractionQuery") {
+    // Pi has no mid-turn question UI (unlike cursor-agent's interactive prompt).
+    // Tell the model to ask in text and keep going with its best judgment
+    // instead of stalling on an answer that will never come.
+    const unsupported =
+      "Pi's Cursor provider has no interactive question UI. State the question in your reply text " +
+      "and continue with your best judgment instead of waiting for an answer.";
     h.send(
       createClientMessage({
         message: {
@@ -393,6 +398,11 @@ function handleInteractionQuery(h: ServerHandlers, query: { id: number; query: {
     return;
   }
   if (query.query.case === "webSearchRequestQuery") {
+    // Route web search through Pi's own tools, like cursor-agent's search.
+    const webTool = findWebTool(toolNames(h));
+    const reason = webTool
+      ? `Web search is not available natively in Pi. Call the MCP tool "${webTool}" with the same query instead.`
+      : "Web search is not available in Pi (no web tool configured). Answer from your own knowledge and say so.";
     h.send(
       createClientMessage({
         message: {
@@ -404,7 +414,7 @@ function handleInteractionQuery(h: ServerHandlers, query: { id: number; query: {
               value: create(WebSearchRequestResponseSchema, {
                 result: {
                   case: "rejected",
-                  value: create(WebSearchRequestResponse_RejectedSchema, { reason: unsupported }),
+                  value: create(WebSearchRequestResponse_RejectedSchema, { reason }),
                 },
               }),
             },
@@ -414,7 +424,7 @@ function handleInteractionQuery(h: ServerHandlers, query: { id: number; query: {
     );
     return;
   }
-  h.onError(unsupported);
+  h.onError(`Pi's Cursor provider does not support the ${query.query.case} interaction query.`);
 }
 
 /** Decode and dispatch one server frame. Undecodable frames are ignored. */

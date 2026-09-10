@@ -40,24 +40,48 @@ export function buildToolDefinitions(tools: readonly Tool[] | undefined): McpToo
  * the next step goes through MCP and actually executes.
  */
 const NATIVE_TOOL_EQUIVALENTS: Record<string, string[]> = {
-  readArgs: ["read", "Read"],
-  lsArgs: ["ls", "LS"],
-  grepArgs: ["grep", "Grep"],
-  writeArgs: ["write", "edit", "Edit"],
-  deleteArgs: ["bash", "edit", "Edit"],
-  shellArgs: ["bash"],
-  shellStreamArgs: ["bash"],
-  backgroundShellSpawnArgs: ["bash"],
-  writeShellStdinArgs: ["bash"],
-  fetchArgs: ["web_search", "fetch"],
+  readArgs: ["read"],
+  lsArgs: ["ls"],
+  grepArgs: ["grep"],
+  writeArgs: ["write", "edit"],
+  deleteArgs: ["bash", "edit"],
+  shellArgs: ["bash", "shell", "exec", "run"],
+  shellStreamArgs: ["bash", "shell", "exec"],
+  backgroundShellSpawnArgs: ["bash", "shell", "exec"],
+  writeShellStdinArgs: ["bash", "shell", "exec"],
+  fetchArgs: ["web_search", "webfetch", "fetch", "tavily_search", "search"],
 };
+
+/** Web-capable MCP tools, for the web-search interaction fallback. */
+const WEB_TOOL_CANDIDATES = ["web_search", "webfetch", "fetch", "tavily_search", "search"];
+
+/** Case-insensitive lookup that returns Pi's actual tool name (casing intact). */
+export function findPiTool(
+  candidates: readonly string[],
+  availableTools: ReadonlySet<string>,
+): string | undefined {
+  const byLower = new Map<string, string>();
+  for (const name of availableTools) {
+    const key = name.toLowerCase();
+    if (!byLower.has(key)) byLower.set(key, name);
+  }
+  for (const candidate of candidates) {
+    const match = byLower.get(candidate.toLowerCase());
+    if (match) return match;
+  }
+  return undefined;
+}
+
+export function findWebTool(availableTools: ReadonlySet<string>): string | undefined {
+  return findPiTool(WEB_TOOL_CANDIDATES, availableTools);
+}
 
 export function nativeToolRejection(
   execCase: string,
   availableTools: ReadonlySet<string>,
 ): string {
   const candidates = NATIVE_TOOL_EQUIVALENTS[execCase] ?? [];
-  const match = candidates.find((name) => availableTools.has(name));
+  const match = findPiTool(candidates, availableTools);
   if (match) {
     return `This native Cursor tool is not available in Pi. Call the MCP tool "${match}" with the same arguments instead.`;
   }
