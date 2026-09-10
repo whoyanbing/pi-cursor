@@ -159,7 +159,7 @@ export function describeTransportError(error: unknown, baseUrl: string): string 
 export function isRetriableTransportError(error: unknown): boolean {
   const code = String((error as { code?: unknown } | null)?.code ?? "");
   const message = error instanceof Error ? error.message : String(error);
-  return /ETIMEDOUT|ECONNRESET|EPIPE|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|UND_ERR_CONNECT_TIMEOUT|connect timeout|GOAWAY|socket hang up|ECONNABORTED/i.test(
+  return /ETIMEDOUT|ECONNRESET|EPIPE|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|UND_ERR_CONNECT_TIMEOUT|connect timeout|GOAWAY|socket hang up|ECONNABORTED|SOCKET_UNBOUND|closed before handshake/i.test(
     `${code} ${message}`,
   );
 }
@@ -195,13 +195,35 @@ function waitForHandshake(
 
   return new Promise((resolve, reject) => {
     let settled = false;
-    const socket = entry.session.socket;
+    // `session.socket` is a Proxy over the underlying net.Socket. Once the
+    // session tears down, any property access on it (e.g. `.off`, `.once`)
+    // throws ERR_HTTP2_SOCKET_UNBOUND instead of returning undefined, so
+    // every use below must be guarded — `finish()` runs from the session's
+    // own `close`/`error` handlers, i.e. exactly when the socket is unbound.
+    let socket: { off?: unknown; once?: unknown; setTimeout?: unknown } | undefined;
+    try {
+      socket = entry.session.socket as unknown as typeof socket;
+    } catch {
+      socket = undefined;
+    }
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
-      entry.session.off("remoteSettings", onReady);
-      entry.session.off("close", onDead);
-      entry.session.off("error", onDead);
+      try {
+        entry.session.off("remoteSettings", onReady);
+      } catch {
+        // Session already torn down.
+      }
+      try {
+        entry.session.off("close", onDead);
+      } catch {
+        // Session already torn down.
+      }
+      try {
+        entry.session.off("error", onDead);
+      } catch {
+        // Session already torn down.
+      }
       if (timer) clearTimeout(timer);
       try {
         entry.session.setTimeout(0);
@@ -209,9 +231,17 @@ function waitForHandshake(
         // Some test fakes omit setTimeout.
       }
       if (socket) {
-        socket.off("timeout", onSocketTimeout);
         try {
-          socket.setTimeout(0);
+          (socket.off as ((event: string, listener: () => void) => void) | undefined)?.call(
+            socket,
+            "timeout",
+            onSocketTimeout,
+          );
+        } catch {
+          // Proxy throws ERR_HTTP2_SOCKET_UNBOUND after session teardown.
+        }
+        try {
+          (socket.setTimeout as ((ms: number) => void) | undefined)?.call(socket, 0);
         } catch {
           // Socket already gone.
         }
@@ -239,10 +269,17 @@ function waitForHandshake(
         // Fake sessions used in tests may not implement setTimeout.
       }
       try {
-        socket?.setTimeout(timeout);
-        socket?.once("timeout", onSocketTimeout);
+        (socket as { setTimeout?: (ms: number) => void } | undefined)?.setTimeout?.(timeout);
       } catch {
-        // Socket not yet attached.
+        // Socket not yet attached, or already unbound.
+      }
+      try {
+        (socket as { once?: (event: string, listener: () => void) => void } | undefined)?.once?.(
+          "timeout",
+          onSocketTimeout,
+        );
+      } catch {
+        // Proxy throws ERR_HTTP2_SOCKET_UNBOUND after session teardown.
       }
     }
 
