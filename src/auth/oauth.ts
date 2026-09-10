@@ -147,9 +147,12 @@ export async function refreshAccessToken(refreshToken: string, signal?: AbortSig
 
 /** Full login flow for Pi's oauth callback. */
 export async function loginCursor(callbacks: LoginCallbacks, signal?: AbortSignal): Promise<CursorCredentials> {
+  signal?.throwIfAborted();
   const params = await generateLoginParams();
+  signal?.throwIfAborted();
   await callbacks.onAuth({ url: params.loginUrl });
   const tokens = await pollForTokens(params.uuid, params.verifier, signal);
+  signal?.throwIfAborted();
   return { access: tokens.accessToken, refresh: tokens.refreshToken, expires: tokenExpiry(tokens.accessToken) };
 }
 

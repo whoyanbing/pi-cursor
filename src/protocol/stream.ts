@@ -15,7 +15,7 @@
  * the assistant message, the Pi stream finalizes with `toolUse`, and the Run
  * stream is parked as a bridge for the next call to answer.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   Api,
   AssistantMessage,
@@ -588,13 +588,25 @@ export function streamCursor(
         estimatePromptTokens(model, context),
       );
       writer.seedInputTokens(initialInput);
-      const token = options?.apiKey?.trim() || (await resolveAccessToken());
+      const token = options?.apiKey?.trim() || (await resolveAccessToken(options?.signal));
       if (writer.closed) return;
       if (!token) {
         throw new Error("Not logged in to Cursor. Run /login cursor, or set CURSOR_ACCESS_TOKEN.");
       }
       const routing = resolveRouting(model, options);
       const baseUrl = getAgentUrl();
+      // A parked Run still holds its original prompt/tool/model configuration.
+      // Rebuild instead of resuming when Pi changes any of those between tools.
+      // Hash the token too so an account change cannot reuse another account's
+      // stream; never retain the raw credential in the bridge registry.
+      const requestFingerprint = createHash("sha256").update(JSON.stringify({
+        systemPrompt: parsed.systemPrompt,
+        toolDefinitions,
+        routing,
+        baseUrl,
+        workspaceCwd: resolveWorkspaceCwd(options?.sessionId),
+        token,
+      })).digest("hex");
 
       sweepBridges();
 
@@ -608,6 +620,7 @@ export function streamCursor(
         }
         const resumable =
           parsed.isToolContinuation &&
+          existing.requestFingerprint === requestFingerprint &&
           !isBridgeExpired(existing) &&
           existing.rpc.alive &&
           bridgeMatchesResults(existing, parsed.answeredToolCallIds);
@@ -620,7 +633,7 @@ export function streamCursor(
       }
 
       state = { bridge: null, writer, outputTokens: 0, lastWorkAt: Date.now(), watchdog: null, parkQueued: false };
-      startFresh(state, parsed, toolDefinitions, conversationId, token, baseUrl, routing, options?.sessionId);
+      startFresh(state, parsed, toolDefinitions, conversationId, token, baseUrl, routing, requestFingerprint, options?.sessionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       recordRun({ lastError: message });
@@ -653,6 +666,7 @@ function startFresh(
   token: string,
   baseUrl: string,
   routing: ModelRouting,
+  requestFingerprint: string,
   sessionId?: string,
 ): void {
   const actionText = parsed.action.kind === "userMessage" ? parsed.action.text : CONTINUE_TEXT;
@@ -678,6 +692,7 @@ function startFresh(
     pendingExecs: new Map(),
     conversationId,
     baseUrl,
+    requestFingerprint,
     pausedAt: Date.now(),
     heartbeatTimer: null,
   };

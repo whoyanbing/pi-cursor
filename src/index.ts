@@ -4,9 +4,9 @@
  * Registers the `cursor-native` API provider and the `cursor` Pi provider with
  * OAuth login, model discovery, and the three slash commands.
  */
-import type { OAuthCredentials } from "@earendil-works/pi-ai";
+import type { Model, Provider, ProviderAuth } from "@earendil-works/pi-ai";
 import { registerApiProvider } from "@earendil-works/pi-ai/compat";
-import { sessionEntryToContextMessages, type ExtensionAPI, type ProviderConfig } from "@earendil-works/pi-coding-agent";
+import { sessionEntryToContextMessages, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { CURSOR_API, PROVIDER_ID, PROVIDER_NAME, getAgentUrl } from "./config.js";
 import { loginCursor, refreshAccessToken } from "./auth/oauth.js";
 import { consumeSystemCredentialNotice, resolveCredential } from "./auth/credentials.js";
@@ -15,7 +15,8 @@ import { shouldCancelThresholdCompact } from "./compaction-guard.js";
 import { cachedModels, startupCatalog, writeCache } from "./models/catalog.js";
 import { clearAllBridges, clearBridgesForSession } from "./protocol/bridge.js";
 import { discoverModels } from "./models/discovery.js";
-import { processAndRegister, toProviderModels } from "./models/processing.js";
+import { processAndRegister, processModels, toProviderModels } from "./models/processing.js";
+import { setRouting } from "./models/registry.js";
 import type { ProcessedModel } from "./models/types.js";
 import { streamCursor } from "./protocol/stream.js";
 import { clearAllUsage, clearUsageForSession, estimatePromptTokens } from "./protocol/usage.js";
@@ -57,68 +58,86 @@ export default function (pi: ExtensionAPI): void {
   const startup = processAndRegister(startupCatalog());
   lastRegisteredModels = startup;
 
-  const oauth: NonNullable<ProviderConfig["oauth"]> = {
+  const ambientAuth: NonNullable<ProviderAuth["apiKey"]> = {
+    name: "Cursor access token or desktop credentials",
+    async check({ credential, ctx, signal }) {
+      signal.throwIfAborted();
+      if (credential) return credential.key ? { type: "api_key", source: "stored credential" } : undefined;
+      if ((await ctx.env("CURSOR_ACCESS_TOKEN"))?.trim()) return { type: "api_key", source: "CURSOR_ACCESS_TOKEN" };
+      const resolved = await resolveCredential({ signal, skipPiStore: true, refresh: false });
+      return resolved ? { type: "api_key", source: resolved.source } : undefined;
+    },
+    async resolve({ credential, ctx, signal }) {
+      signal.throwIfAborted();
+      if (credential) return credential.key ? { auth: { apiKey: credential.key }, source: "stored credential" } : undefined;
+      const env = (await ctx.env("CURSOR_ACCESS_TOKEN"))?.trim();
+      if (env) return { auth: { apiKey: env }, source: "CURSOR_ACCESS_TOKEN" };
+      const resolved = await resolveCredential({ signal, skipPiStore: true });
+      return resolved ? { auth: { apiKey: resolved.accessToken }, source: resolved.source } : undefined;
+    },
+  };
+  const oauth: NonNullable<ProviderAuth["oauth"]> = {
     name: PROVIDER_NAME,
     isSubscription: true,
-    async login(callbacks) {
-      const credentials = await loginCursor(callbacks);
-      return credentials as OAuthCredentials;
+    async login(interaction) {
+      const credentials = await loginCursor({
+        onAuth: ({ url }) => interaction.notify({ type: "auth_url", url }),
+      }, interaction.signal);
+      return { ...credentials, type: "oauth" };
     },
-    async refreshToken(credentials, signal) {
-      const refreshed = await refreshAccessToken(credentials.refresh, signal);
-      return refreshed as OAuthCredentials;
+    async refresh(credentials, signal) {
+      return { ...await refreshAccessToken(credentials.refresh, signal), type: "oauth" };
     },
-    getApiKey: (credentials) => credentials.access,
+    async toAuth(credentials) { return { apiKey: credentials.access }; },
   };
-
-  pi.registerProvider(PROVIDER_ID, {
+  const asModels = (models: ProcessedModel[]): Model<typeof CURSOR_API>[] => toProviderModels(models).map((model) => ({
+    ...model, api: CURSOR_API, provider: PROVIDER_ID, baseUrl: getAgentUrl(), compat: undefined,
+  }));
+  let models = asModels(startup);
+  const provider: Provider<typeof CURSOR_API> = {
+    id: PROVIDER_ID,
     name: PROVIDER_NAME,
     baseUrl: getAgentUrl(),
-    api: CURSOR_API,
-    models: toProviderModels(startup),
-    oauth,
+    auth: { apiKey: ambientAuth, oauth },
+    getModels: () => models,
+    stream: (model, context, options) => streamCursor(model, context, options),
     streamSimple: streamCursor,
     async refreshModels(context) {
-      if (!context.allowNetwork || context.signal?.aborted) return toProviderModels(lastRegisteredModels);
+      if (!context.allowNetwork || context.signal.aborted) return;
       const credential = context.credential;
-      const access = credential && "access" in credential ? String(credential.access ?? "") : "";
-      const token = access || (await resolveCredential())?.accessToken || "";
-      if (!token) return toProviderModels(lastRegisteredModels);
-      if (!context.force) {
-        // Background refresh: skip while the discovery cache is fresh.
-        if (cachedModels()) return toProviderModels(lastRegisteredModels);
-      }
+      const access = credential?.type === "oauth" ? credential.access : credential?.key;
+      const token = access || (await resolveCredential({ signal: context.signal, skipPiStore: true }))?.accessToken;
+      if (!token || (!context.force && cachedModels())) return;
       try {
         const raw = await discoverModels(token, context.signal);
-        if (raw.length === 0) return toProviderModels(lastRegisteredModels);
-        writeCache(raw);
-        const processed = processAndRegister(raw);
-        lastRegisteredModels = processed;
-        const next = toProviderModels(processed);
+        context.signal.throwIfAborted();
+        if (raw.length === 0) return;
+        const processed = processModels(raw);
+        const next = asModels(processed.models);
         await context.publish({
-          persist: {
-            models: next.map((model) => ({
-              ...model,
-              api: CURSOR_API,
-              provider: PROVIDER_ID,
-              baseUrl: getAgentUrl(),
-            })),
-            checkedAt: Date.now(),
+          persist: { models: next, checkedAt: Date.now() },
+          update: () => {
+            writeCache(raw);
+            setRouting(processed.registry);
+            lastRegisteredModels = processed.models;
+            models = next;
           },
         });
-        return next;
       } catch {
-        return toProviderModels(lastRegisteredModels);
+        context.signal.throwIfAborted();
+        // Keep the last usable catalog on transient discovery failure.
       }
     },
-  });
+  };
+  pi.registerProvider(provider);
 
   registerCursorCommands(pi, { getLastRegisteredModels: () => lastRegisteredModels });
 
   pi.on("session_start", async (_event, ctx) => {
     rememberSessionCwd(ctx.sessionManager.getSessionId(), ctx.cwd);
     try {
-      await resolveCredential();
+      // Availability/notice only: request-time OAuth refresh belongs to Pi.
+      await resolveCredential({ refresh: false });
     } catch {
       // Login is optional at session start.
     }

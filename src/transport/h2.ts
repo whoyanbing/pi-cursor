@@ -280,6 +280,7 @@ function openRawStream(baseUrl: string, options: OpenStreamOptions): RpcStream {
   const finish = (info: StreamEndInfo): void => {
     if (finished) return;
     finished = true;
+    options.signal?.removeEventListener("abort", onAbort);
     handshakeAbort.abort();
     entry.streams = Math.max(0, entry.streams - 1);
     if (cbs.end) cbs.end(info);
@@ -288,36 +289,28 @@ function openRawStream(baseUrl: string, options: OpenStreamOptions): RpcStream {
   const fail = (error: Error): void => {
     if (finished) return;
     finished = true;
+    options.signal?.removeEventListener("abort", onAbort);
     handshakeAbort.abort();
     entry.streams = Math.max(0, entry.streams - 1);
     if (cbs.error) cbs.error(error);
     else pendingError = error;
   };
 
+  // Finalize cancellation before destroy(): Node may emit a readable `end`
+  // while tearing down the stream, which must never become a successful RPC.
+  const onAbort = (): void => {
+    fail(new Error("Aborted"));
+    stream?.destroy();
+  };
+
   entry.streams += 1;
+  options.signal?.addEventListener("abort", onAbort, { once: true });
+  if (options.signal?.aborted) onAbort();
 
   const isErrorStatus = (): boolean => status !== 0 && (status < 200 || status >= 300);
 
   const attach = (next: http2.ClientHttp2Stream): void => {
     stream = next;
-
-    if (options.signal) {
-      if (options.signal.aborted) {
-        try {
-          next.destroy();
-        } catch {}
-      } else {
-        options.signal.addEventListener(
-          "abort",
-          () => {
-            try {
-              next.destroy();
-            } catch {}
-          },
-          { once: true },
-        );
-      }
-    }
 
     next.on("response", (headers) => {
       status = Number(headers[":status"] ?? 0);
@@ -352,7 +345,12 @@ function openRawStream(baseUrl: string, options: OpenStreamOptions): RpcStream {
       finish({ ok: true, status: status || 200 });
     });
 
+    next.on("close", () => {
+      if (!finished) fail(new Error(`Cursor stream closed before response completed (${rpcPath})`));
+    });
+
     next.on("error", (error) => {
+      if (finished) return;
       entry.poisoned = true;
       fail(new Error(describeTransportError(error, baseUrl)));
       dropSession(baseUrl, entry);
@@ -420,6 +418,7 @@ function openRawStream(baseUrl: string, options: OpenStreamOptions): RpcStream {
         finished = true;
         entry.streams = Math.max(0, entry.streams - 1);
       }
+      options.signal?.removeEventListener("abort", onAbort);
       handshakeAbort.abort();
       try {
         stream?.destroy();
@@ -558,24 +557,43 @@ export function unaryRpc(
   options: OpenStreamOptions & { body: Uint8Array; timeoutMs?: number },
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const stream = openStream(baseUrl, {
-      ...options,
-      unary: true,
-      connectTimeoutMs: options.connectTimeoutMs ?? options.timeoutMs,
-    });
+    // Whole-RPC deadline, independent of the connection handshake deadline.
+    // 0 explicitly disables it; discovery is bounded by default as well.
+    const timeoutMs = options.timeoutMs ?? 30_000;
+    const stream = openStream(baseUrl, { ...options, unary: true });
     const chunks: Buffer[] = [];
-    stream.onData((chunk) => chunks.push(chunk));
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+      stream.destroy();
+      if (error) reject(error);
+      else resolve(Buffer.concat(chunks));
+    };
+    const onAbort = (): void => finish(new Error("Aborted"));
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => finish(new Error(`Cursor RPC timeout after ${timeoutMs}ms (${options.rpcPath})`)), timeoutMs);
+    }
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    stream.onData((chunk) => { if (!settled) chunks.push(chunk); });
     stream.onEnd((info) => {
+      if (options.signal?.aborted) return onAbort();
       if (!info.ok) {
         const detail = info.statusText || info.errorBody || "request failed";
-        reject(new Error(`Cursor HTTP ${info.status}: ${detail}`));
+        finish(new Error(`Cursor HTTP ${info.status}: ${detail}`));
         return;
       }
-      resolve(Buffer.concat(chunks));
+      finish();
     });
-    stream.onError(reject);
-    stream.write(options.body);
-    stream.end();
+    stream.onError((error) => finish(error));
+    if (options.signal?.aborted) onAbort();
+    if (!settled) {
+      stream.write(options.body);
+      stream.end();
+    }
   });
 }
 

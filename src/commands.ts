@@ -2,9 +2,8 @@
  * Slash commands: /cursor.model, /cursor.usage, /cursor.doctor.
  */
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { resolveAccessToken, resolveCredential } from "./auth/credentials.js";
 import { fetchCursorUsage, formatUsd, type CursorUsageSummary } from "./auth/usage.js";
-import { DASHBOARD_URL, getAgentUrl } from "./config.js";
+import { DASHBOARD_URL, PROVIDER_ID, getAgentUrl } from "./config.js";
 import { diagnosticsReport } from "./diagnostics.js";
 import type { ProcessedModel } from "./models/types.js";
 
@@ -126,20 +125,13 @@ export function formatModelList(models: readonly ProcessedModel[], filter: strin
 }
 
 export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandOptions): void {
-  pi.registerCommand("cursor.model", {
-    description: "List Cursor models registered by this provider",
-    handler: async (args, ctx) => {
-      const all = /\ball\b/i.test(args ?? "");
-      const filter = (args ?? "").replace(/\ball\b/i, "");
-      emit(ctx, formatModelList(options.getLastRegisteredModels(), filter, all));
-    },
-  });
-
   pi.registerCommand("cursor.usage", {
     description: "Show Cursor plan usage and on-demand spend",
     handler: async (_args, ctx) => {
       try {
-        const token = await resolveAccessToken();
+        // Use the same runtime/account as model requests, including SDK-owned
+        // credential stores and Pi's serialized OAuth refresh.
+        const token = (await ctx.modelRegistry.getProviderAuth(PROVIDER_ID))?.auth.apiKey;
         if (!token) {
           emit(ctx, "Not logged in to Cursor. Run /login cursor first.", "error");
           return;
@@ -151,16 +143,20 @@ export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandO
     },
   });
 
+  pi.registerCommand("cursor.model", {
+    description: "List Cursor models registered by this provider",
+    handler: async (args, ctx) => {
+      const all = /\ball\b/i.test(args ?? "");
+      const filter = (args ?? "").replace(/\ball\b/i, "");
+      emit(ctx, formatModelList(options.getLastRegisteredModels(), filter, all));
+    },
+  });
+
   pi.registerCommand("cursor.doctor", {
     description: "Show sanitized Cursor provider diagnostics",
     handler: async (_args, ctx) => {
-      try {
-        // Refresh the credential source so the report reflects reality.
-        await resolveCredential();
-      } catch {
-        // Diagnostics still render without credentials.
-      }
-      emit(ctx, diagnosticsReport());
+      const status = ctx.modelRegistry.getProviderAuthStatus(PROVIDER_ID);
+      emit(ctx, diagnosticsReport(status.configured ? status.label ?? status.source : "none"));
     },
   });
 }

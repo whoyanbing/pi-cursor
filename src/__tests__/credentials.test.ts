@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
+import lockfile from "proper-lockfile";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -34,6 +35,7 @@ afterEach(() => {
   if (originalPolicy === undefined) delete process.env.PI_CURSOR_SYSTEM_CREDENTIALS;
   else process.env.PI_CURSOR_SYSTEM_CREDENTIALS = originalPolicy;
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.resetModules();
 });
 
@@ -73,15 +75,13 @@ describe("resolveCredential cascade", () => {
     expect(await credentials.resolveAccessToken()).toBe("");
   });
 
-  it("caches a fresh token across calls", async () => {
+  it("observes environment changes rather than reusing a stale account", async () => {
     process.env.CURSOR_ACCESS_TOKEN = jwt(Math.floor(Date.now() / 1000) + 3600);
     const credentials = await loadCredentials();
-    const first = await credentials.resolveCredential();
-    delete process.env.CURSOR_ACCESS_TOKEN; // cache must serve the second call
-    const second = await credentials.resolveCredential();
-    expect(second?.accessToken).toBe(first?.accessToken);
-    credentials.resetCredentialCache();
-    clearAuthStore();
+    expect((await credentials.resolveCredential())?.source).toBe("env");
+    process.env.CURSOR_ACCESS_TOKEN = "replacement";
+    expect((await credentials.resolveCredential())?.accessToken).toBe("replacement");
+    delete process.env.CURSOR_ACCESS_TOKEN;
     process.env.PI_CURSOR_SYSTEM_CREDENTIALS = "0";
     expect(await credentials.resolveCredential()).toBeNull();
   });
@@ -151,6 +151,85 @@ describe("resolveCredential cascade", () => {
     const forced = await credentials.resolveCredential({ forceRefresh: true });
     expect(forced?.accessToken).toBe(refreshed);
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("OAuth store lifecycle", () => {
+  function seed(path: string) {
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, JSON.stringify({
+      cursor: { type: "oauth", access: jwt(Math.floor(Date.now() / 1000) - 3600), refresh: "old", expires: 1 },
+      other: { type: "api_key", key: "preserve" },
+    }));
+  }
+  function mockRefresh() {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      accessToken: jwt(Math.floor(Date.now() / 1000) + 7200), refreshToken: "new",
+    })));
+    vi.stubGlobal("fetch", fetch);
+    return fetch;
+  }
+
+  it("writes to PI_CODING_AGENT_DIR without touching the default account", async () => {
+    const dir = join(homedir(), "custom-agent");
+    const path = join(dir, "auth.json");
+    const defaultPath = join(homedir(), ".pi", "agent", "auth.json");
+    seed(path);
+    writeFileSync(defaultPath, '{"cursor":{"type":"api_key","key":"other-account"}}');
+    vi.stubEnv("PI_CODING_AGENT_DIR", dir);
+    mockRefresh();
+    const credentials = await loadCredentials();
+    expect((await credentials.resolveCredential())?.refreshToken).toBe("new");
+    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ cursor: { refresh: "new" }, other: { key: "preserve" } });
+    expect(JSON.parse(readFileSync(defaultPath, "utf8")).cursor.key).toBe("other-account");
+    expect(existsSync(`${path}.lock`)).toBe(false);
+  });
+
+  it("serializes concurrent refreshes so the rotated token is exchanged once", async () => {
+    seed(join(homedir(), ".pi", "agent", "auth.json"));
+    const fetch = mockRefresh();
+    const credentials = await loadCredentials();
+    const results = await Promise.all([credentials.resolveCredential(), credentials.resolveCredential()]);
+    expect(results.map(value => value?.refreshToken)).toEqual(["new", "new"]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks the account under Pi's lock before refreshing", async () => {
+    const path = join(homedir(), ".pi", "agent", "auth.json");
+    seed(path);
+    const release = await lockfile.lock(path, { realpath: false });
+    const fetch = mockRefresh();
+    const credentials = await loadCredentials();
+    const result = credentials.resolveCredential();
+    // readSource has captured the old refresh token; switch accounts while the
+    // request is waiting for the same lock that Pi's CredentialStore uses.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    writeFileSync(path, JSON.stringify({ cursor: { type: "oauth", access: "other", refresh: "other-refresh" } }));
+    await release();
+    expect((await result)?.accessToken).toBe("other");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("can cancel while waiting for the credential lock", async () => {
+    const path = join(homedir(), ".pi", "agent", "auth.json");
+    seed(path);
+    const release = await lockfile.lock(path, { realpath: false });
+    try {
+      const credentials = await loadCredentials();
+      const controller = new AbortController();
+      const result = credentials.resolveCredential({ signal: controller.signal });
+      const rejected = expect(result).rejects.toThrow(/abort/i);
+      controller.abort();
+      await rejected;
+    } finally { await release(); }
+  });
+
+  it("does not refresh during availability checks", async () => {
+    seed(join(homedir(), ".pi", "agent", "auth.json"));
+    const fetch = mockRefresh();
+    const credentials = await loadCredentials();
+    expect((await credentials.resolveCredential({ refresh: false }))?.refreshToken).toBe("old");
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

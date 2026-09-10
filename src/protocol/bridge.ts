@@ -36,6 +36,8 @@ export interface Bridge {
   pendingExecs: Map<string, PendingExec>;
   conversationId: string;
   baseUrl: string;
+  /** Hash of the prompt, tools, routing, endpoint, workspace and credential. */
+  requestFingerprint: string;
   pausedAt: number;
   heartbeatTimer: ReturnType<typeof setInterval> | null;
   /** Set when the Run stream dies while parked waiting for Pi tool results. */

@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
 import http2 from "node:http2";
 import net from "node:net";
+import { getEventListeners } from "node:events";
 import type { AddressInfo } from "node:net";
 import {
   closeAllSessions,
   describeTransportError,
   isRetriableTransportError,
   openStream,
+  unaryRpc,
   type RpcStream,
   type StreamEndInfo,
 } from "../transport/h2.js";
@@ -82,6 +84,77 @@ function waitError(stream: RpcStream): Promise<Error> {
     stream.onError(resolve);
   });
 }
+
+describe("unary RPC lifecycle", () => {
+  it("rejects abort after handshake rather than returning partial success", async () => {
+    let received!: () => void;
+    const ready = new Promise<void>(resolve => { received = resolve; });
+    const { server, url, sessions } = await listenHttp2((stream) => {
+      stream.on("error", () => {});
+      stream.respond({ ":status": 200 });
+      if (sessions() === 1) {
+        stream.write("partial");
+        received();
+      }
+    });
+    const controller = new AbortController();
+    try {
+      const result = unaryRpc(url, { rpcPath: "/x", token: "t", body: new Uint8Array(), signal: controller.signal });
+      // Attach the rejection handler before aborting to avoid unhandled errors.
+      const rejected = expect(result).rejects.toThrow(/abort/i);
+      await ready;
+      controller.abort();
+      await rejected;
+    } finally {
+      closeAllSessions();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it("bounds the response wait, not just the handshake", async () => {
+    const { server, url } = await listenHttp2((stream) => {
+      stream.on("error", () => {});
+      stream.respond({ ":status": 200 });
+    });
+    try {
+      await expect(unaryRpc(url, { rpcPath: "/x", token: "t", body: new Uint8Array(), timeoutMs: 100 })).rejects.toThrow(/RPC timeout after 100ms/);
+    } finally {
+      closeAllSessions();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it("returns successful bytes and cleans up abort listeners", async () => {
+    const { server, url } = await listenHttp2((stream) => {
+      stream.respond({ ":status": 200 });
+      stream.end("complete");
+    });
+    const controller = new AbortController();
+    try {
+      const bytes = await unaryRpc(url, { rpcPath: "/x", token: "t", body: new Uint8Array(), signal: controller.signal, timeoutMs: 1000 });
+      expect(bytes.toString()).toBe("complete");
+      expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+      controller.abort();
+    } finally {
+      closeAllSessions();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it("rejects an already-aborted signal without opening an RPC", async () => {
+    let requests = 0;
+    const { server, url } = await listenHttp2(() => { requests++; });
+    const controller = new AbortController();
+    controller.abort();
+    try {
+      await expect(unaryRpc(url, { rpcPath: "/x", token: "t", body: new Uint8Array(), signal: controller.signal })).rejects.toThrow(/abort/i);
+      expect(requests).toBe(0);
+    } finally {
+      closeAllSessions();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+});
 
 describe("http2 session pool", () => {
   it("reuses the session after a stream is destroyed", async () => {

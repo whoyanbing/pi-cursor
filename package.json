@@ -4,8 +4,19 @@
   "description": "Pi extension for Cursor — native Connect/protobuf streaming, OAuth login, model discovery",
   "type": "module",
   "license": "MIT",
-  "keywords": ["pi-package", "pi", "cursor", "ai", "provider"],
-  "files": ["src", "proto", "README.md", "LICENSE"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "cursor",
+    "ai",
+    "provider"
+  ],
+  "files": [
+    "src",
+    "proto",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "check": "tsc --noEmit",
     "test": "vitest run",
@@ -13,10 +24,13 @@
     "proto:gen": "buf generate"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.0.0"
+    "@bufbuild/protobuf": "^2.0.0",
+    "proper-lockfile": "^4.1.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "^0.84.4",
@@ -28,6 +42,7 @@
     "@earendil-works/pi-ai": "^0.84.4",
     "@earendil-works/pi-coding-agent": "^0.84.4",
     "@types/node": "^24.0.0",
+    "@types/proper-lockfile": "^4.1.4",
     "typescript": "^5.7.0",
     "vitest": "^4.1.9"
   }

@@ -20,12 +20,16 @@ interface CapturedNotification {
   type?: string;
 }
 
-function makeCtx(): ExtensionCommandContext & { notifications: CapturedNotification[] } {
+function makeCtx(auth?: { apiKey?: string; status?: { configured: boolean; source?: string; label?: string } }): ExtensionCommandContext & { notifications: CapturedNotification[] } {
   const notifications: CapturedNotification[] = [];
   return {
     notifications,
     hasUI: true,
     ui: { notify: (message: string, type?: string) => notifications.push({ message, type }) },
+    modelRegistry: {
+      getProviderAuth: async () => (auth?.apiKey ? { auth: { apiKey: auth.apiKey } } : undefined),
+      getProviderAuthStatus: () => auth?.status ?? (auth?.apiKey ? { configured: true, source: "test" } : { configured: false, source: "none" }),
+    },
   } as unknown as ExtensionCommandContext & { notifications: CapturedNotification[] };
 }
 
@@ -129,7 +133,6 @@ describe("registerCursorCommands", () => {
 
   it("cursor.usage reports an error when not logged in", async () => {
     register();
-    credentialsMock.resolveAccessToken.mockResolvedValueOnce("");
     const ctx = makeCtx();
     await pi.commands.get("cursor.usage")!.handler("", ctx);
     expect(ctx.notifications[0].type).toBe("error");
@@ -138,7 +141,7 @@ describe("registerCursorCommands", () => {
 
   it("cursor.usage renders plan usage", async () => {
     register();
-    credentialsMock.resolveAccessToken.mockResolvedValueOnce("token-1");
+    const ctx = makeCtx({ apiKey: "token-1" });
     globalThis.fetch = vi.fn(
       async () =>
         new Response(
@@ -151,7 +154,6 @@ describe("registerCursorCommands", () => {
         ),
     ) as unknown as typeof fetch;
 
-    const ctx = makeCtx();
     await pi.commands.get("cursor.usage")!.handler("", ctx);
     const message = ctx.notifications[0].message;
     expect(message).toContain("Usage • Pro");
@@ -163,9 +165,8 @@ describe("registerCursorCommands", () => {
 
   it("cursor.usage surfaces fetch failures", async () => {
     register();
-    credentialsMock.resolveAccessToken.mockResolvedValueOnce("token-1");
     globalThis.fetch = vi.fn(async () => new Response("nope", { status: 503 })) as unknown as typeof fetch;
-    const ctx = makeCtx();
+    const ctx = makeCtx({ apiKey: "token-1" });
     await pi.commands.get("cursor.usage")!.handler("", ctx);
     expect(ctx.notifications[0].type).toBe("error");
     expect(ctx.notifications[0].message).toContain("503");
@@ -173,7 +174,6 @@ describe("registerCursorCommands", () => {
 
   it("cursor.doctor renders a report without credentials", async () => {
     register();
-    credentialsMock.resolveCredential.mockResolvedValueOnce(null);
     const ctx = makeCtx();
     await pi.commands.get("cursor.doctor")!.handler("", ctx);
     const message = ctx.notifications[0].message;

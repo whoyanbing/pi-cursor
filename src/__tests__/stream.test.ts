@@ -334,6 +334,37 @@ afterEach(() => {
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
+describe("parked bridge configuration", () => {
+  it.each(["add tool", "remove tool", "schema", "description", "prompt", "reasoning", "credential"])("rebuilds the Run after a change to %s", async (change) => {
+    const first = collect(streamCursor(makeModel(), makeContext([user("run")]), { apiKey: "t", sessionId, reasoning: "low" }));
+    const parked = lastStream();
+    parked.execMcp(1, "exec-1", "call_1", "bash", {});
+    await first;
+    let nextTools = tools;
+    if (change === "add tool") nextTools = [...tools, { name: "new_tool", description: "new", parameters: { type: "object" } } as Tool];
+    if (change === "remove tool") nextTools = [];
+    if (change === "schema") nextTools = [{ ...tools[0], parameters: { type: "object", properties: { newArg: { type: "string" } } } } as Tool];
+    if (change === "description") nextTools = [{ ...tools[0], description: "updated description" }];
+    const context = makeContext([
+      user("run"), assistantToolCall("call_1", "bash", {}), toolResult("call_1", "bash", "ok"),
+    ], { tools: nextTools, systemPrompt: change === "prompt" ? "new instructions" : "be helpful" });
+    const second = collect(streamCursor(makeModel(), context, {
+      apiKey: change === "credential" ? "new-token" : "t", sessionId,
+      reasoning: change === "reasoning" ? "high" : "low",
+    }));
+    const fresh = lastStream();
+    fresh.turnEnded();
+    await second;
+    expect(parked.destroyed).toBe(true);
+    expect(transport.streams).toHaveLength(2);
+    const request = runRequestOf(fresh);
+    expect(actionTextOf(request)).toBe("Continue.");
+    expect(request.conversationState!.turns).toHaveLength(1);
+    expect(request.mcpTools!.mcpTools.map(tool => tool.toolName)).toEqual(nextTools.map(tool => tool.name));
+    expect(request.requestedModel!.modelId).toBe(change === "reasoning" ? "gpt-5-high" : "gpt-5-low");
+  });
+});
+
 describe("streamCursor", () => {
   it("streams text deltas and finishes on turnEnded", async () => {
     const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("hi")]), { apiKey: "t", sessionId }));

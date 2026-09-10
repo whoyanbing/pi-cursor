@@ -13,9 +13,11 @@
  */
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import lockfile from "proper-lockfile";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { setTimeout as sleep } from "node:timers/promises";
+import { getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { PROVIDER_ID } from "../config.js";
 import { isTokenNearExpiry, refreshAccessToken, tokenExpiry } from "./oauth.js";
 
@@ -34,37 +36,52 @@ let lastSource: CredentialSource = "none";
 let systemCredentialNoticeShown = false;
 
 function authStorePath(): string {
-  return join(homedir(), ".pi", "agent", "auth.json");
+  return join(getAgentDir(), "auth.json");
 }
 
-/**
- * Persist a rotated pi-oauth token back to auth.json. Cursor may rotate the
- * refresh token on exchange; keeping only the in-memory copy would invalidate
- * Pi's next `/login`-owned refresh. Keychain / IDE tokens are never written
- * here — those stores belong to the desktop apps.
+/** Standalone commands share Pi's auth.json lock for the entire refresh.
+ * Provider-owned OAuth requests use Pi's own locked CredentialStore instead.
  */
-function persistPiOAuth(access: string, refresh: string, expires: number): void {
+async function refreshPiOAuth(expectedRefresh: string, signal?: AbortSignal): Promise<ResolvedCredential | null> {
   const authPath = authStorePath();
+  mkdirSync(dirname(authPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + 30_000;
+  let release: (() => Promise<void>) | undefined;
+  let compromised: Error | undefined;
+  while (!release) {
+    signal?.throwIfAborted();
+    try {
+      release = await lockfile.lock(authPath, {
+        realpath: false,
+        stale: 30_000,
+        retries: 0,
+        onCompromised: (error) => { compromised = error; },
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ELOCKED" || Date.now() >= deadline) throw error;
+      await sleep(50, undefined, { signal });
+    }
+  }
   try {
-    mkdirSync(dirname(authPath), { recursive: true, mode: 0o700 });
-    let data: Record<string, unknown> = {};
-    if (existsSync(authPath)) {
-      const parsed = JSON.parse(readFileSync(authPath, "utf8")) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        data = parsed as Record<string, unknown>;
-      }
+    signal?.throwIfAborted();
+    if (compromised) throw compromised;
+    if (!existsSync(authPath)) return null; // logged out / store removed
+    const data = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, unknown>;
+    const current = data[PROVIDER_ID] as { type?: string; access?: string; refresh?: string } | undefined;
+    if (current?.type !== "oauth" || !current.access) return null;
+    // Someone else refreshed or changed accounts while we waited: do not
+    // exchange the now-stale token or overwrite their credential.
+    if (current.refresh !== expectedRefresh) {
+      return { accessToken: current.access, refreshToken: current.refresh, source: "pi-oauth" };
     }
-    const current = data[PROVIDER_ID];
-    if (current && typeof current === "object" && !Array.isArray(current)) {
-      const type = (current as { type?: unknown }).type;
-      if (type && type !== "oauth") return;
-      data[PROVIDER_ID] = { ...current, type: "oauth", access, refresh, expires };
-    } else {
-      data[PROVIDER_ID] = { type: "oauth", access, refresh, expires };
-    }
+    const refreshed = await refreshAccessToken(expectedRefresh, signal);
+    signal?.throwIfAborted();
+    if (compromised) throw compromised;
+    data[PROVIDER_ID] = { ...current, ...refreshed, type: "oauth" };
     writeFileSync(authPath, JSON.stringify(data, null, 2), { encoding: "utf8", mode: 0o600 });
-  } catch {
-    // In-memory token still works for this process.
+    return { accessToken: refreshed.access, refreshToken: refreshed.refresh, source: "pi-oauth" };
+  } finally {
+    await release();
   }
 }
 
@@ -101,9 +118,9 @@ function piStoredTokens(): { accessToken?: string; refreshToken?: string } {
   return {};
 }
 
-function runSecurity(args: string[]): Promise<string | undefined> {
+function runSecurity(args: string[], signal?: AbortSignal): Promise<string | undefined> {
   return new Promise((resolve) => {
-    execFile("security", args, { timeout: 5000 }, (error, stdout) => {
+    execFile("security", args, { timeout: 5000, signal }, (error, stdout) => {
       if (error) {
         resolve(undefined);
         return;
@@ -114,11 +131,11 @@ function runSecurity(args: string[]): Promise<string | undefined> {
   });
 }
 
-async function keychainTokens(): Promise<{ accessToken?: string; refreshToken?: string }> {
+async function keychainTokens(signal?: AbortSignal): Promise<{ accessToken?: string; refreshToken?: string }> {
   if (process.platform !== "darwin") return {};
   const [accessToken, refreshToken] = await Promise.all([
-    runSecurity(["find-generic-password", "-s", "cursor-access-token", "-a", "cursor-user", "-w"]),
-    runSecurity(["find-generic-password", "-s", "cursor-refresh-token", "-a", "cursor-user", "-w"]),
+    runSecurity(["find-generic-password", "-s", "cursor-access-token", "-a", "cursor-user", "-w"], signal),
+    runSecurity(["find-generic-password", "-s", "cursor-refresh-token", "-a", "cursor-user", "-w"], signal),
   ]);
   return { ...(accessToken ? { accessToken } : {}), ...(refreshToken ? { refreshToken } : {}) };
 }
@@ -163,53 +180,69 @@ async function vscdbTokens(): Promise<{ accessToken?: string; refreshToken?: str
   return {};
 }
 
-async function readSource(signal?: AbortSignal): Promise<ResolvedCredential | null> {
+async function readSource(signal?: AbortSignal, skipPiStore = false): Promise<ResolvedCredential | null> {
+  signal?.throwIfAborted();
   const env = envToken();
   if (env) return { accessToken: env, source: "env" };
 
-  const stored = piStoredTokens();
+  const stored = skipPiStore ? {} : piStoredTokens();
   if (stored.accessToken) {
     return { accessToken: stored.accessToken, refreshToken: stored.refreshToken, source: "pi-oauth" };
   }
 
   if (!systemCredentialsAllowed()) return null;
 
-  const keychain = await keychainTokens();
+  // Cache only desktop credentials. Pi's store and environment must be read
+  // on every call so logout, account changes, and policy changes take effect.
+  if (cached && (cached.source === "keychain" || cached.source === "ide-vscdb") && Date.now() < cached.expiresAt) {
+    return cached;
+  }
+  const keychain = await keychainTokens(signal);
+  signal?.throwIfAborted();
   if (keychain.accessToken) {
     return { accessToken: keychain.accessToken, refreshToken: keychain.refreshToken, source: "keychain" };
   }
 
   const vscdb = await vscdbTokens();
+  signal?.throwIfAborted();
   if (vscdb.accessToken) {
     return { accessToken: vscdb.accessToken, refreshToken: vscdb.refreshToken, source: "ide-vscdb" };
   }
 
-  void signal;
   return null;
 }
 
 /** Resolve a usable access token, refreshing near-expiry tokens when possible. */
-export async function resolveCredential(options?: { forceRefresh?: boolean; signal?: AbortSignal }): Promise<ResolvedCredential | null> {
-  if (!options?.forceRefresh && cached && !isTokenNearExpiry(cached.accessToken)) {
-    lastSource = cached.source;
-    return { accessToken: cached.accessToken, refreshToken: cached.refreshToken, source: cached.source };
-  }
-
-  let credential = await readSource(options?.signal);
+export async function resolveCredential(options?: {
+  forceRefresh?: boolean;
+  signal?: AbortSignal;
+  /** Native provider auth must not read a different SDK runtime's auth store. */
+  skipPiStore?: boolean;
+  /** Availability checks may inspect credentials but must not exchange tokens. */
+  refresh?: boolean;
+}): Promise<ResolvedCredential | null> {
+  let credential = await readSource(options?.signal, options?.skipPiStore);
   if (!credential) {
     cached = null;
     lastSource = "none";
     return null;
   }
 
-  if (credential.refreshToken && (options?.forceRefresh || isTokenNearExpiry(credential.accessToken))) {
+  if (options?.refresh !== false && credential.refreshToken && (options?.forceRefresh || isTokenNearExpiry(credential.accessToken))) {
     try {
-      const refreshed = await refreshAccessToken(credential.refreshToken, options?.signal);
-      credential = { accessToken: refreshed.access, refreshToken: refreshed.refresh, source: credential.source };
       if (credential.source === "pi-oauth") {
-        persistPiOAuth(refreshed.access, refreshed.refresh, refreshed.expires);
+        const refreshed = await refreshPiOAuth(credential.refreshToken, options?.signal);
+        if (!refreshed) {
+          lastSource = "none";
+          return null;
+        }
+        credential = refreshed;
+      } else {
+        const refreshed = await refreshAccessToken(credential.refreshToken, options?.signal);
+        credential = { accessToken: refreshed.access, refreshToken: refreshed.refresh, source: credential.source };
       }
     } catch {
+      options?.signal?.throwIfAborted();
       // Keep the unrefreshed token if it is not actually expired yet.
       if (isTokenNearExpiry(credential.accessToken, -REFRESH_SKEW_MS)) {
         cached = null;
@@ -225,8 +258,8 @@ export async function resolveCredential(options?: { forceRefresh?: boolean; sign
 }
 
 /** Access token for stream calls; empty string when not logged in. */
-export async function resolveAccessToken(): Promise<string> {
-  const credential = await resolveCredential();
+export async function resolveAccessToken(signal?: AbortSignal): Promise<string> {
+  const credential = await resolveCredential({ signal });
   return credential?.accessToken ?? "";
 }
 

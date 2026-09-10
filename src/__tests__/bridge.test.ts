@@ -34,6 +34,7 @@ function fakeBridge(conversationId: string): Bridge {
     pendingExecs: new Map(),
     conversationId,
     baseUrl: "https://example",
+    requestFingerprint: "test-config",
     pausedAt: Date.now(),
     heartbeatTimer: null,
   };

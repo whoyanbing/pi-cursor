@@ -46,14 +46,14 @@ function ageMs(timestamp: number | undefined): string {
 }
 
 /** Sanitized multi-line diagnostics report. */
-export function diagnosticsReport(): string {
+export function diagnosticsReport(tokenSource = lastCredentialSource() as string): string {
   const cache = cacheInfo();
   const lines = [
     `provider=cursor`,
     `api=cursor-native`,
     `agentUrl=${getAgentUrl()}`,
     `clientVersion=${clientVersion()}`,
-    `tokenSource=${lastCredentialSource()}`,
+    `tokenSource=${tokenSource}`,
     `registeredModels=${registrySize()}`,
     `modelCache=${cache.count} models, saved ${cache.savedAt ? ageMs(cache.savedAt) : "never"}, stale=${cache.stale ? "yes" : "no"}`,
     `activeBridges=${activeBridgeCount()}`,
