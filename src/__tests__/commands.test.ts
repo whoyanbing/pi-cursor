@@ -28,6 +28,7 @@ function makeCtx(auth?: { apiKey?: string; status?: { configured: boolean; sourc
     modelRegistry: {
       getProviderAuth: async () => (auth?.apiKey ? { auth: { apiKey: auth.apiKey } } : undefined),
       getProviderAuthStatus: () => auth?.status ?? (auth?.apiKey ? { configured: true, source: "test" } : { configured: false, source: "none" }),
+      refresh: vi.fn(async () => ({ aborted: false, errors: new Map() })),
     },
   } as unknown as ExtensionCommandContext & { notifications: CapturedNotification[] };
 }
@@ -89,9 +90,9 @@ describe("registerCursorCommands", () => {
     registerCursorCommands(pi, { getLastRegisteredModels: () => models });
   }
 
-  it("registers cursor.model, cursor.usage and cursor.doctor", () => {
+  it("registers cursor.model, cursor.usage, cursor.refresh and cursor.doctor", () => {
     register();
-    expect([...pi.commands.keys()].sort()).toEqual(["cursor.doctor", "cursor.model", "cursor.usage"]);
+    expect([...pi.commands.keys()].sort()).toEqual(["cursor.doctor", "cursor.model", "cursor.refresh", "cursor.usage"]);
     for (const command of pi.commands.values()) {
       expect(command.description).toBeTruthy();
       expect(typeof command.handler).toBe("function");
@@ -171,6 +172,34 @@ describe("registerCursorCommands", () => {
     expect(ctx.notifications[0].message).toContain("503");
   });
 
+  it("cursor.refresh errors when not logged in", async () => {
+    register();
+    const ctx = makeCtx();
+    await pi.commands.get("cursor.refresh")!.handler("", ctx);
+    expect(ctx.notifications[0].type).toBe("error");
+    expect(ctx.notifications[0].message).toMatch(/login cursor/i);
+    expect(ctx.modelRegistry.refresh).not.toHaveBeenCalled();
+  });
+
+  it("cursor.refresh forces a provider refresh and reports the count", async () => {
+    register();
+    const ctx = makeCtx({ apiKey: "token-1" });
+    await pi.commands.get("cursor.refresh")!.handler("", ctx);
+    expect(ctx.modelRegistry.refresh).toHaveBeenCalledWith(
+      expect.objectContaining({ providers: ["cursor"], force: true, allowNetwork: true }),
+    );
+    expect(ctx.notifications[0].message).toContain("Cursor catalog refreshed: 3 models.");
+  });
+
+  it("cursor.refresh surfaces provider errors", async () => {
+    register();
+    const ctx = makeCtx({ apiKey: "token-1" });
+    vi.mocked(ctx.modelRegistry.refresh).mockResolvedValueOnce({ aborted: false, errors: new Map([["cursor", new Error("boom")]]) });
+    await pi.commands.get("cursor.refresh")!.handler("", ctx);
+    expect(ctx.notifications[0].type).toBe("error");
+    expect(ctx.notifications[0].message).toContain("boom");
+  });
+
   it("cursor.doctor renders a report without credentials", async () => {
     register();
     const ctx = makeCtx();
@@ -178,7 +207,7 @@ describe("registerCursorCommands", () => {
     const message = ctx.notifications[0].message;
     expect(message).toContain("provider=cursor");
     expect(message).toContain("agentUrl=");
-    expect(message).toContain("commands=/cursor.model /cursor.usage /cursor.doctor");
+    expect(message).toContain("commands=/cursor.model /cursor.usage /cursor.refresh /cursor.doctor");
   });
 });
 

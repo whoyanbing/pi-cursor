@@ -83,7 +83,7 @@ describe("extension registration", () => {
     expect(typeof oauth.refresh).toBe("function");
     expect(await oauth.toAuth({ type: "oauth", access: "a", refresh: "r", expires: 1 })).toEqual({ apiKey: "a" });
     expect(provider.auth.apiKey).toBeDefined();
-    expect([...pi.commands.keys()].sort()).toEqual(["cursor.doctor", "cursor.model", "cursor.usage"]);
+    expect([...pi.commands.keys()].sort()).toEqual(["cursor.doctor", "cursor.model", "cursor.refresh", "cursor.usage"]);
     for (const event of ["session_start", "session_before_compact", "session_compact", "turn_end", "session_tree", "model_select", "session_shutdown"]) {
       expect(pi.on).toHaveBeenCalledWith(event, expect.any(Function));
     }

@@ -2,7 +2,7 @@
  * pi-cursor extension entry point.
  *
  * Registers the `cursor-native` API provider and the `cursor` Pi provider with
- * OAuth login, model discovery, and the three slash commands.
+ * OAuth login, model discovery, and the four slash commands.
  */
 import type { Model, Provider, ProviderAuth } from "@earendil-works/pi-ai";
 import { registerApiProvider } from "@earendil-works/pi-ai/compat";

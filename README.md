@@ -88,6 +88,7 @@ shows a one-time notice; disable reuse with `PI_CURSOR_SYSTEM_CREDENTIALS=0`.
                              Pro/Team membership, reset date.
 /cursor.doctor               Sanitized diagnostics: agent URL, client version, token source,
                              model cache age, active bridges, last RPC/error, hints.
+/cursor.refresh              Force refresh the model catalog from the server.
 ```
 
 ## Models

@@ -1,5 +1,5 @@
 /**
- * Slash commands: /cursor.model, /cursor.usage, /cursor.doctor.
+ * Slash commands: /cursor.model, /cursor.usage, /cursor.refresh, /cursor.doctor.
  */
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { fetchCursorUsage, formatUsd, type CursorUsageSummary } from "./auth/usage.js";
@@ -152,6 +152,33 @@ export function registerCursorCommands(pi: ExtensionAPI, options: CursorCommandO
       const cache = cacheInfo();
       const age = cache.savedAt === null ? "static fallback (no cache file)" : `cache age ${Math.round((Date.now() - cache.savedAt) / 1000)}s, stale=${cache.stale ? "yes" : "no"}`;
       emit(ctx, `${formatModelList(options.getLastRegisteredModels(), filter, all)}\n\n[${age}]`);
+    },
+  });
+
+  pi.registerCommand("cursor.refresh", {
+    description: "Force refresh Cursor model catalog from server",
+    handler: async (_args, ctx) => {
+      try {
+        const token = (await ctx.modelRegistry.getProviderAuth(PROVIDER_ID))?.auth.apiKey;
+        if (!token) {
+          emit(ctx, "Not logged in to Cursor. Run /login cursor first.", "error");
+          return;
+        }
+        const result = await ctx.modelRegistry.refresh({
+          providers: [PROVIDER_ID],
+          force: true,
+          allowNetwork: true,
+          ...(ctx.signal ? { signal: ctx.signal } : {}),
+        });
+        const error = result?.errors?.get(PROVIDER_ID);
+        if (error) {
+          emit(ctx, `Cursor refresh failed: ${error.message}`, "error");
+          return;
+        }
+        emit(ctx, `Cursor catalog refreshed: ${options.getLastRegisteredModels().length} models.`);
+      } catch (error) {
+        emit(ctx, `Cursor refresh failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+      }
     },
   });
 
