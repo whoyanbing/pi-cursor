@@ -6,6 +6,7 @@ import {
   connectTimeoutMs,
   getAgentUrl,
   normalizeBaseUrl,
+  prewarmClientVersion,
   readCliAgentUrl,
   resetAgentUrlCache,
   resetClientVersionCache,
@@ -161,6 +162,23 @@ describe("clientVersion", () => {
     resetClientVersionCache();
     expect(clientVersion()).toMatch(/^cli-/);
     expect(clientVersion()).not.toBe("cli-test-123");
+  });
+
+  it("never blocks the request path on the probe", () => {
+    delete process.env.PI_CURSOR_CLIENT_VERSION;
+    resetClientVersionCache();
+    const started = Date.now();
+    const value = clientVersion();
+    expect(Date.now() - started).toBeLessThan(50);
+    expect(value).toMatch(/^cli-/);
+  });
+
+  it("prewarm resolves to a cli-prefixed version and caches it", async () => {
+    delete process.env.PI_CURSOR_CLIENT_VERSION;
+    resetClientVersionCache();
+    const value = await prewarmClientVersion();
+    expect(value).toMatch(/^cli-/);
+    expect(clientVersion()).toBe(value);
   });
 });
 

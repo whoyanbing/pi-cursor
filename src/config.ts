@@ -6,7 +6,7 @@
  * locally installed CLI already knows the current one.
  */
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -80,34 +80,57 @@ export function clientVersion(): string {
 export const CLIENT_VERSION_TTL_MS = 60 * 60_000;
 
 let cachedClientVersion: { value: string; at: number } | null = null;
+let probeInFlight: Promise<string> | null = null;
 
-/** Best-effort `cursor-agent --version` probe (e.g. "2026.08.25-3e8eec8"). */
-function probeCliVersion(): string | undefined {
-  try {
-    const raw = execFileSync("cursor-agent", ["--version"], {
-      encoding: "utf8",
-      timeout: 2_000,
-    }).trim().split("\n")[0]?.trim();
-    if (!raw || !/^\d{4}\.\d{2}\.\d{2}-[0-9a-f]+$/i.test(raw)) return undefined;
-    return `cli-${raw}`;
-  } catch {
-    return undefined;
-  }
+/** Best-effort async `cursor-agent --version` probe (e.g. "2026.08.25-3e8eec8"). */
+function probeCliVersion(): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    try {
+      execFile("cursor-agent", ["--version"], { encoding: "utf8", timeout: 2_000 }, (error, stdout) => {
+        if (error) return resolve(undefined);
+        const raw = String(stdout).trim().split("\n")[0]?.trim();
+        if (!raw || !/^\d{4}\.\d{2}\.\d{2}-[0-9a-f]+$/i.test(raw)) return resolve(undefined);
+        resolve(`cli-${raw}`);
+      });
+    } catch {
+      resolve(undefined);
+    }
+  });
+}
+
+/**
+ * Kick off (or reuse) a background probe. Never blocks the request path: the
+ * extension calls this at activation so the value is ready before the first
+ * turn; if it is not, the bundled default is sent and the next turn catches up.
+ */
+export function prewarmClientVersion(): Promise<string> {
+  if (probeInFlight) return probeInFlight;
+  probeInFlight = probeCliVersion()
+    .then((value) => {
+      const resolved = value ?? DEFAULT_CLIENT_VERSION;
+      cachedClientVersion = { value: resolved, at: Date.now() };
+      return resolved;
+    })
+    .finally(() => {
+      probeInFlight = null;
+    });
+  return probeInFlight;
 }
 
 /**
  * Follow the locally installed Cursor CLI so the server sees a current client.
  * Cursor gates behavior by version; a stale hardcoded default drifts from what
  * `cursor-agent` itself sends. Env override always wins; failures fall back.
+ * Synchronous and non-blocking: a stale/missing cache triggers a background
+ * refresh and returns the best value known right now.
  */
 function detectedClientVersion(): string {
   const now = Date.now();
   if (cachedClientVersion && now - cachedClientVersion.at < CLIENT_VERSION_TTL_MS) {
     return cachedClientVersion.value;
   }
-  const value = probeCliVersion() ?? DEFAULT_CLIENT_VERSION;
-  cachedClientVersion = { value, at: now };
-  return value;
+  void prewarmClientVersion();
+  return cachedClientVersion?.value ?? DEFAULT_CLIENT_VERSION;
 }
 
 /** Drop the CLI version cache (tests and /reload). */

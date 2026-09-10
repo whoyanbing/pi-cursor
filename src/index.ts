@@ -7,7 +7,7 @@
 import type { Model, Provider, ProviderAuth } from "@earendil-works/pi-ai";
 import { registerApiProvider } from "@earendil-works/pi-ai/compat";
 import { sessionEntryToContextMessages, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CURSOR_API, PROVIDER_ID, PROVIDER_NAME, getAgentUrl } from "./config.js";
+import { CURSOR_API, PROVIDER_ID, PROVIDER_NAME, getAgentUrl, prewarmClientVersion } from "./config.js";
 import { loginCursor, refreshAccessToken } from "./auth/oauth.js";
 import { consumeSystemCredentialNotice, resolveCredential } from "./auth/credentials.js";
 import { registerCursorCommands } from "./commands.js";
@@ -52,6 +52,8 @@ function registerCursorApi(): void {
 
 export default function (pi: ExtensionAPI): void {
   registerCursorApi();
+  // Off the request path: resolve the local CLI version before the first turn.
+  void prewarmClientVersion();
 
   // Synchronous startup: register the bundled/cached catalog immediately so
   // /model works before any network call. Pi calls refreshModels in background.
