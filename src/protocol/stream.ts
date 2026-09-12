@@ -35,7 +35,7 @@ import {
   ClientHeartbeatSchema,
   type McpToolDefinition,
 } from "../proto/agent_pb.js";
-import { CONTINUE_TEXT, RUN_RPC, getAgentUrl, heartbeatIntervalMs, streamIdleTimeoutMs } from "../config.js";
+import { CONTINUE_TEXT, RUN_RPC, bridgeEnabled, getAgentUrl, heartbeatIntervalMs, streamIdleTimeoutMs } from "../config.js";
 import { encodeFrame, FrameParser, parseErrorPayload } from "../transport/connect.js";
 import { openStream } from "../transport/h2.js";
 import { resolveAccessToken } from "../auth/credentials.js";
@@ -300,6 +300,18 @@ interface RunState {
   lastWorkAt: number;
   watchdog: ReturnType<typeof setInterval> | null;
   parkQueued: boolean;
+  /** streamCursor() entry time; cleared once first-token latency is recorded. */
+  startedAt: number;
+}
+
+function newRunState(writer: TurnWriter, bridge: Bridge | null, startedAt: number): RunState {
+  return { bridge, writer, outputTokens: 0, lastWorkAt: Date.now(), watchdog: null, parkQueued: false, startedAt };
+}
+
+function markFirstOutput(state: RunState): void {
+  if (state.startedAt <= 0) return;
+  recordRun({ lastFirstTokenMs: Date.now() - state.startedAt });
+  state.startedAt = 0;
 }
 
 function heartbeatFrame(): Uint8Array {
@@ -404,12 +416,14 @@ function failParkedBridge(state: RunState, message: string): void {
 function parkBridge(state: RunState): void {
   const writer = state.writer;
   const bridge = state.bridge;
-  if (bridge) {
+  state.writer = null;
+  if (!bridgeEnabled()) {
+    dropBridge(state);
+  } else if (bridge) {
     bridge.pausedAt = Date.now();
     startHeartbeat(bridge);
+    stopWatchdog(state);
   }
-  state.writer = null;
-  stopWatchdog(state);
   if (writer && !writer.closed) writer.finish("toolUse");
 }
 
@@ -492,10 +506,12 @@ function makeHandlers(state: RunState): ServerHandlers {
     toolDefinitions: bridge.toolDefinitions,
     onText(text) {
       markWork();
+      markFirstOutput(state);
       state.writer?.text(text);
     },
     onThinking(text) {
       markWork();
+      markFirstOutput(state);
       state.writer?.thinking(text);
     },
     onTokenDelta(tokens) {
@@ -520,6 +536,7 @@ function makeHandlers(state: RunState): ServerHandlers {
     },
     onToolCall(call) {
       markWork();
+      markFirstOutput(state);
       const pending: PendingExec = { ...call, surfaced: false };
       bridge.pendingExecs.set(call.toolCallId, pending);
       if (state.writer && !state.writer.closed) queuePark(state);
@@ -573,6 +590,7 @@ export function streamCursor(
     options.signal.addEventListener("abort", abortRun, { once: true });
   }
 
+  const startedAt = Date.now();
   void (async () => {
     try {
       const parsed = parseConversation(context);
@@ -625,14 +643,16 @@ export function streamCursor(
           existing.rpc.alive &&
           bridgeMatchesResults(existing, parsed.answeredToolCallIds);
         if (resumable) {
-          state = { bridge: existing, writer, outputTokens: 0, lastWorkAt: Date.now(), watchdog: null, parkQueued: false };
+          state = newRunState(writer, existing, startedAt);
+          recordRun({ lastRunMode: "resume" });
           resumeBridge(state, parsed);
           return;
         }
         destroyBridge(existing);
       }
 
-      state = { bridge: null, writer, outputTokens: 0, lastWorkAt: Date.now(), watchdog: null, parkQueued: false };
+      state = newRunState(writer, null, startedAt);
+      recordRun({ lastRunMode: "fresh" });
       startFresh(state, parsed, toolDefinitions, conversationId, token, baseUrl, routing, requestFingerprint, options?.sessionId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

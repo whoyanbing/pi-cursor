@@ -388,7 +388,7 @@ describe("handleServerMessage", () => {
         }),
         h.handlers,
       );
-      const exec = execReplyOf(h.sent[0]) as { case: string; value: Record<string, { case?: string; value?: Record<string, unknown> }> };
+      const exec = execReplyOf(h.sent[0]) as unknown as { case: string; value: Record<string, { case?: string; value?: Record<string, unknown> }> };
       expect(exec.case, execCase).toBe(resultCase);
       const oneof = exec.value[execCase === "shellStreamArgs" ? "event" : "result"];
       expect(oneof.case, execCase).toBe(rejectCase);

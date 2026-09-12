@@ -9,7 +9,7 @@ import { activeBridgeCount } from "./protocol/bridge.js";
 import { registrySize } from "./models/registry.js";
 import { cacheInfo } from "./models/catalog.js";
 import { lastCredentialSource } from "./auth/credentials.js";
-import { clientVersion, getAgentUrl } from "./config.js";
+import { bridgeEnabled, clientVersion, getAgentUrl } from "./config.js";
 
 export interface RunDiagnostics {
   lastEndpoint?: string;
@@ -18,6 +18,10 @@ export interface RunDiagnostics {
   lastTurnEndedAt?: number;
   lastError?: string;
   runsStarted?: number;
+  /** "resume" when a parked bridge answered the tool results inline, else "fresh". */
+  lastRunMode?: string;
+  /** Wall time from streamCursor() to the first model output on that run. */
+  lastFirstTokenMs?: number;
 }
 
 const state: RunDiagnostics = { runsStarted: 0 };
@@ -49,6 +53,7 @@ export function diagnosticsReport(tokenSource = lastCredentialSource() as string
     `lastEndpoint=${state.lastEndpoint ?? "none"}`,
     `lastRequestBytes=${state.lastRequestBytes ?? "none"}`,
     `lastTurnEnded=${ageMs(state.lastTurnEndedAt)}`,
+    `lastRun=${state.lastRunMode ?? "none"} firstToken=${state.lastFirstTokenMs ?? "n/a"}ms bridge=${bridgeEnabled() ? "on" : "off"}`,
     `lastError=${state.lastError ?? "none"}`,
     `transport=in-process-h2`,
     `commands=/cursor.model /cursor.usage /cursor.refresh /cursor.doctor`,

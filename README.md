@@ -115,6 +115,7 @@ time. Results cache to `~/.pi/agent/cursor-models-cache.json` (6h TTL).
 | `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS` | `180000` | Silence watchdog; `0` disables |
 | `PI_CURSOR_CONNECT_TIMEOUT_MS` | `30000` | HTTP/2 handshake timeout; `0` disables. Timed-out runs retry once on a fresh session |
 | `PI_CURSOR_BRIDGE_PAUSE_MS` | `900000` | Max time a parked bridge waits for tool results |
+| `PI_CURSOR_BRIDGE` | `1` | Set `0` to drop the Run stream at each tool call and rebuild on the next turn (A/B via `lastRun`/`firstToken` in `/cursor.doctor`) |
 | `PI_CURSOR_HEARTBEAT_MS` | `15000` | Client heartbeat cadence on the Run stream |
 
 ## Development
