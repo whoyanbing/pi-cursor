@@ -1,5 +1,5 @@
 import type { Api, Context, Model } from "@earendil-works/pi-ai";
-import { parseConversation } from "./context.js";
+import { parseConversation, type ParsedConversation } from "./context.js";
 import { buildHistory } from "./prompt.js";
 
 /**
@@ -123,8 +123,7 @@ export function contextInputTokens(context: Context, model: Model<Api>): number 
  * A compacted Context already contains just the summary and kept messages, so
  * this seed drops immediately after compaction instead of inheriting 94%.
  */
-export function estimatePromptTokens(model: Model<Api>, context: Context): number {
-  const parsed = parseConversation(context);
+export function estimatePromptTokens(model: Model<Api>, context: Context, parsed = parseConversation(context)): number {
   let chars = toolDefinitionChars(context);
   for (const message of buildHistory(parsed.systemPrompt, parsed.completedTurns)) {
     chars += JSON.stringify(message).length;

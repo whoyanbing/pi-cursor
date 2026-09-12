@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stripThinkingTags, ThinkingTagParser } from "../protocol/thinking.js";
+import { ThinkingTagParser } from "../protocol/thinking.js";
 
 describe("ThinkingTagParser", () => {
   it("passes plain text through", () => {
@@ -52,10 +52,6 @@ describe("ThinkingTagParser", () => {
     const flushed = parser.flush();
     expect(flushed.reasoning).toBe("<");
     expect(flushed.content).toBe("");
-  });
-
-  it("stripThinkingTags removes tagged spans", () => {
-    expect(stripThinkingTags("<thinking>hidden</thinking>visible")).toBe("visible");
   });
 
   it("emits less-than signs that are not tags", () => {

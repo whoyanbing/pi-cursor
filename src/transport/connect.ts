@@ -12,18 +12,17 @@ export interface ConnectFrame {
   payload: Uint8Array;
 }
 
-export function encodeFrame(payload: Uint8Array, endStream = false): Uint8Array {
+/** Zero-copy Buffer view over a Uint8Array (Buffer.from(u8) would copy). */
+export function asBuffer(bytes: Uint8Array): Buffer {
+  return Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+export function encodeFrame(payload: Uint8Array, endStream = false): Buffer {
   const frame = Buffer.allocUnsafe(5 + payload.byteLength);
   frame[0] = endStream ? CONNECT_END_STREAM_FLAG : 0;
   frame.writeUInt32BE(payload.byteLength, 1);
-  Buffer.from(payload).copy(frame, 5);
+  frame.set(payload, 5);
   return frame;
-}
-
-/** Encode a Connect end-stream error frame (used to surface transport failures). */
-export function encodeErrorFrame(code: string, message: string): Uint8Array {
-  const payload = Buffer.from(JSON.stringify({ error: { code, message } }), "utf8");
-  return encodeFrame(payload, true);
 }
 
 export interface ConnectErrorPayload {
@@ -53,7 +52,7 @@ export class FrameParser {
   private header: { endStream: boolean; length: number } | null = null;
 
   push(chunk: Uint8Array): ConnectFrame[] {
-    const buf = Buffer.from(chunk);
+    const buf = asBuffer(chunk);
     this.chunks.push(buf);
     this.buffered += buf.byteLength;
 
@@ -75,11 +74,6 @@ export class FrameParser {
       this.header = null;
     }
     return frames;
-  }
-
-  /** Total bytes currently buffered (diagnostics). */
-  get pendingBytes(): number {
-    return this.buffered;
   }
 
   private take(count: number): Buffer {

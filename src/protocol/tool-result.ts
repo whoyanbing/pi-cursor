@@ -3,6 +3,14 @@
  * replayed history both go through this so a huge bash/read dump cannot
  * blow the HTTP/2 stream or the next rebuild.
  */
+import { create } from "@bufbuild/protobuf";
+import {
+  McpImageContentSchema,
+  McpSuccessSchema,
+  McpTextContentSchema,
+  McpToolResultContentItemSchema,
+  type McpSuccess,
+} from "../proto/agent_pb.js";
 import type { ToolResultPayload } from "./context.js";
 
 export const MAX_TOOL_RESULT_TEXT_BYTES = 512 * 1024;
@@ -20,6 +28,28 @@ export function truncateUtf8(text: string, maxBytes: number, originalBytes: numb
 export function boundToolResultText(content: string): string {
   const bytes = Buffer.byteLength(content, "utf8");
   return bytes > MAX_TOOL_RESULT_TEXT_BYTES ? truncateUtf8(content, MAX_TOOL_RESULT_TEXT_BYTES, bytes) : content;
+}
+
+/** Bounded payload → `McpSuccess` (text + images, or one empty text item). */
+export function mcpSuccess(payload: ToolResultPayload): McpSuccess {
+  const bounded = boundToolResultPayload(payload);
+  const content = [];
+  if (bounded.content) {
+    content.push(create(McpToolResultContentItemSchema, {
+      content: { case: "text" as const, value: create(McpTextContentSchema, { text: bounded.content }) },
+    }));
+  }
+  for (const image of bounded.images) {
+    content.push(create(McpToolResultContentItemSchema, {
+      content: { case: "image" as const, value: create(McpImageContentSchema, { data: image.data, mimeType: image.mimeType }) },
+    }));
+  }
+  if (content.length === 0) {
+    content.push(create(McpToolResultContentItemSchema, {
+      content: { case: "text" as const, value: create(McpTextContentSchema, { text: "" }) },
+    }));
+  }
+  return create(McpSuccessSchema, { content, isError: false });
 }
 
 /** Truncate text and drop trailing images that would exceed the total cap. */

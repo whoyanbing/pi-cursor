@@ -17,8 +17,6 @@ export interface RunDiagnostics {
   lastRequestBytes?: number;
   lastTurnEndedAt?: number;
   lastError?: string;
-  lastModelId?: string;
-  lastRawModelId?: string;
   runsStarted?: number;
 }
 
@@ -27,17 +25,6 @@ const state: RunDiagnostics = { runsStarted: 0 };
 export function recordRun(update: Partial<RunDiagnostics>): void {
   Object.assign(state, update);
   if (update.lastRpcPath) state.runsStarted = (state.runsStarted ?? 0) + 1;
-}
-
-export function resetDiagnostics(): void {
-  Object.assign(state, { runsStarted: 0 });
-  delete state.lastEndpoint;
-  delete state.lastRpcPath;
-  delete state.lastRequestBytes;
-  delete state.lastTurnEndedAt;
-  delete state.lastError;
-  delete state.lastModelId;
-  delete state.lastRawModelId;
 }
 
 function ageMs(timestamp: number | undefined): string {

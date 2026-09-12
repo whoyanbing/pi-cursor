@@ -20,12 +20,8 @@ import {
   ConversationStepSchema,
   ConversationTurnStructureSchema,
   McpArgsSchema,
-  McpImageContentSchema,
-  McpSuccessSchema,
-  McpTextContentSchema,
   McpToolCallSchema,
   McpToolErrorSchema,
-  McpToolResultContentItemSchema,
   McpToolResultSchema,
   McpToolsSchema,
   RequestedModelSchema,
@@ -38,11 +34,12 @@ import {
   UserMessageSchema,
   type McpToolDefinition,
   type McpToolResult,
+  type UserMessage,
 } from "../proto/agent_pb.js";
 import type { ImagePart, ParsedTurn, TurnStep } from "./context.js";
 import { BlobStore } from "./blobs.js";
-import { buildHistory, encodeMessage, mcpToolName, MCP_PROVIDER } from "./prompt.js";
-import { boundToolResultPayload } from "./tool-result.js";
+import { buildHistory, encodeMessage, MCP_PROVIDER } from "./prompt.js";
+import { boundToolResultText, mcpSuccess } from "./tool-result.js";
 
 export { MAX_TOOL_RESULT_TEXT_BYTES, MAX_TOOL_RESULT_TOTAL_BYTES, boundToolResultText } from "./tool-result.js";
 
@@ -161,41 +158,11 @@ function stepBytes(step: TurnStep): Uint8Array {
   const toolName = step.toolName || "tool";
   let resultMessage: McpToolResult | undefined;
   if (step.result) {
-    const bounded = boundToolResultPayload(step.result);
-    if (bounded.isError) {
-      resultMessage = create(McpToolResultSchema, {
-        result: { case: "error", value: create(McpToolErrorSchema, { error: bounded.content }) },
-      });
-    } else {
-      const items = [];
-      if (bounded.content.length > 0) {
-        items.push(
-          create(McpToolResultContentItemSchema, {
-            content: { case: "text" as const, value: create(McpTextContentSchema, { text: bounded.content }) },
-          }),
-        );
-      }
-      for (const image of bounded.images) {
-        items.push(
-          create(McpToolResultContentItemSchema, {
-            content: {
-              case: "image" as const,
-              value: create(McpImageContentSchema, { data: image.data, mimeType: image.mimeType }),
-            },
-          }),
-        );
-      }
-      if (items.length === 0) {
-        items.push(
-          create(McpToolResultContentItemSchema, {
-            content: { case: "text" as const, value: create(McpTextContentSchema, { text: "" }) },
-          }),
-        );
-      }
-      resultMessage = create(McpToolResultSchema, {
-        result: { case: "success", value: create(McpSuccessSchema, { content: items, isError: false }) },
-      });
-    }
+    resultMessage = step.result.isError
+      ? create(McpToolResultSchema, {
+          result: { case: "error", value: create(McpToolErrorSchema, { error: boundToolResultText(step.result.content) }) },
+        })
+      : create(McpToolResultSchema, { result: { case: "success", value: mcpSuccess(step.result) } });
   }
 
   return toBinary(
@@ -223,12 +190,12 @@ function stepBytes(step: TurnStep): Uint8Array {
   );
 }
 
-function userMessageBlob(turn: ParsedTurn, selectedContextBlob: Uint8Array, blobs: BlobStore): Uint8Array {
-  const message = create(UserMessageSchema, {
-    text: turn.userText,
+function userMessage(text: string, images: readonly ImagePart[], selectedContextBlob: Uint8Array): UserMessage {
+  return create(UserMessageSchema, {
+    text,
     messageId: randomUUID(),
     selectedContext: create(SelectedContextSchema, {
-      selectedImages: turn.userImages.map((image) =>
+      selectedImages: images.map((image) =>
         create(SelectedImageSchema, {
           uuid: randomUUID(),
           mimeType: image.mimeType,
@@ -240,7 +207,6 @@ function userMessageBlob(turn: ParsedTurn, selectedContextBlob: Uint8Array, blob
     selectedContextBlob,
     correlationId: randomUUID(),
   });
-  return blobs.put(toBinary(UserMessageSchema, message));
 }
 
 export function buildRunRequest(input: BuildRequestInput): BuiltRequest {
@@ -259,7 +225,7 @@ export function buildRunRequest(input: BuildRequestInput): BuiltRequest {
   );
 
   const turnBlobIds = input.completedTurns.map((turn) => {
-    const userBlobId = userMessageBlob(turn, selectedContextBlob, blobs);
+    const userBlobId = blobs.put(toBinary(UserMessageSchema, userMessage(turn.userText, turn.userImages, selectedContextBlob)));
     const stepBlobIds = turn.steps.map((step) => blobs.put(stepBytes(step)));
     const structure = create(ConversationTurnStructureSchema, {
       turn: {
@@ -291,22 +257,7 @@ export function buildRunRequest(input: BuildRequestInput): BuiltRequest {
     clientName: MCP_PROVIDER,
   });
 
-  const actionMessage = create(UserMessageSchema, {
-    text: input.actionText,
-    messageId: randomUUID(),
-    selectedContext: create(SelectedContextSchema, {
-      selectedImages: (input.actionImages ?? []).map((image) =>
-        create(SelectedImageSchema, {
-          uuid: randomUUID(),
-          mimeType: image.mimeType,
-          dataOrBlobId: { case: "data" as const, value: image.data },
-        }),
-      ),
-    }),
-    mode: 1,
-    selectedContextBlob,
-    correlationId: randomUUID(),
-  });
+  const actionMessage = userMessage(input.actionText, input.actionImages ?? [], selectedContextBlob);
 
   const runRequest = create(AgentRunRequestSchema, {
     conversationState,

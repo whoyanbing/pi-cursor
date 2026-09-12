@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { encodeErrorFrame, encodeFrame, FrameParser, parseErrorPayload } from "../transport/connect.js";
+import { encodeFrame, FrameParser, parseErrorPayload } from "../transport/connect.js";
 
 describe("connect framing", () => {
   it("round-trips a frame", () => {
@@ -45,7 +45,7 @@ describe("connect framing", () => {
   });
 
   it("parses error payloads", () => {
-    const frame = encodeErrorFrame("unavailable", "goaway");
+    const frame = encodeFrame(Buffer.from(JSON.stringify({ error: { code: "unavailable", message: "goaway" } })), true);
     const parsed = new FrameParser().push(frame)[0];
     expect(parsed.endStream).toBe(true);
     const error = parseErrorPayload(parsed.payload);

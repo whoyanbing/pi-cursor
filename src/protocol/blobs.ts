@@ -22,8 +22,6 @@ export class BlobStore {
   private readonly maxBlobBytes: number;
   private readonly maxStoreBytes: number;
   private readonly maxStoreEntries: number;
-  droppedCount = 0;
-  droppedBytes = 0;
 
   constructor(limits?: { maxBlobBytes?: number; maxStoreBytes?: number; maxStoreEntries?: number }) {
     this.maxBlobBytes = limits?.maxBlobBytes ?? MAX_BLOB_BYTES;
@@ -34,8 +32,6 @@ export class BlobStore {
   /** Store `data` and return its 32-byte SHA-256 blob id. */
   put(data: Uint8Array): Uint8Array {
     if (data.byteLength > this.maxBlobBytes) {
-      this.droppedCount += 1;
-      this.droppedBytes += data.byteLength;
       throw new Error(
         `pi-cursor blob exceeds ${this.maxBlobBytes} bytes (${data.byteLength}); refusing to send a dangling blob id`,
       );
@@ -54,8 +50,6 @@ export class BlobStore {
         const index = this.order.lastIndexOf(key);
         if (index >= 0) this.order.splice(index, 1);
         this.totalBytes -= data.byteLength;
-        this.droppedCount += 1;
-        this.droppedBytes += data.byteLength;
         throw new Error(
           `pi-cursor blob store would exceed ${this.maxStoreBytes} bytes / ${this.maxStoreEntries} entries; refusing to send a dangling blob id`,
         );
@@ -75,11 +69,7 @@ export class BlobStore {
 
   /** Record a blob the server pushed to us. Returns false when oversized. */
   setFromServer(id: Uint8Array, data: Uint8Array): boolean {
-    if (data.byteLength > this.maxBlobBytes) {
-      this.droppedCount += 1;
-      this.droppedBytes += data.byteLength;
-      return false;
-    }
+    if (data.byteLength > this.maxBlobBytes) return false;
     const key = Buffer.from(id).toString("hex");
     if (!this.blobs.has(key)) {
       this.blobs.set(key, data);
@@ -107,8 +97,6 @@ export class BlobStore {
       if (blob) {
         this.totalBytes -= blob.byteLength;
         this.blobs.delete(key);
-        this.droppedCount += 1;
-        this.droppedBytes += blob.byteLength;
       }
     }
   }

@@ -68,11 +68,3 @@ export class ThinkingTagParser {
     this.inReasoning = false;
   }
 }
-
-/** One-shot strip for complete (non-streamed) text. */
-export function stripThinkingTags(text: string): string {
-  const parser = new ThinkingTagParser();
-  const first = parser.process(text);
-  const flushed = parser.flush();
-  return first.content + flushed.content;
-}

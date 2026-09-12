@@ -15,7 +15,7 @@
  * the assistant message, the Pi stream finalizes with `toolUse`, and the Run
  * stream is parked as a bridge for the next call to answer.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type {
   Api,
   AssistantMessage,
@@ -432,6 +432,7 @@ function dropBridge(state: RunState): void {
  */
 function attachTransport(state: RunState): void {
   const bridge = state.bridge!;
+  const handlers = makeHandlers(state);
 
   bridge.rpc.onData((chunk) => {
     let frames;
@@ -449,7 +450,7 @@ function attachTransport(state: RunState): void {
         return;
       }
       try {
-        handleServerMessage(frame.payload, makeHandlers(state));
+        handleServerMessage(frame.payload, handlers);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         failParkedBridge(state, `Cursor stream handling failed: ${message}`);
@@ -538,10 +539,6 @@ function makeHandlers(state: RunState): ServerHandlers {
   };
 }
 
-function stableConversationId(options: SimpleStreamOptions | undefined, parsed: ParsedConversation, modelId: string): string {
-  return buildConversationId(parsed, modelId, options?.sessionId);
-}
-
 function collectToolResults(parsed: ParsedConversation): Map<string, ToolResultPayload> {
   const results = new Map<string, ToolResultPayload>();
   for (const turn of parsed.completedTurns) {
@@ -581,12 +578,12 @@ export function streamCursor(
       const parsed = parseConversation(context);
       // Cursor protocol has no tool-choice flag; none means send no tools at all.
       const toolDefinitions = options?.toolChoice === "none" ? [] : buildToolDefinitions(context.tools);
-      const conversationId = stableConversationId(options, parsed, model.id);
+      const conversationId = buildConversationId(parsed, model.id, options?.sessionId);
       const priorInput = contextInputTokens(context, model);
       if (priorInput > 0) stabilizeInputTokens(conversationId, priorInput);
       const initialInput = Math.max(
         cachedInputTokens(conversationId),
-        estimatePromptTokens(model, context),
+        estimatePromptTokens(model, context, parsed),
       );
       writer.seedInputTokens(initialInput);
       const token = options?.apiKey?.trim() || (await resolveAccessToken(options?.signal));
@@ -604,7 +601,8 @@ export function streamCursor(
       // stream; never retain the raw credential in the bridge registry.
       const requestFingerprint = createHash("sha256").update(JSON.stringify({
         systemPrompt: parsed.systemPrompt,
-        toolDefinitions,
+        // inputSchema is bytes; JSON.stringify would expand it ~4x as an index map.
+        tools: toolDefinitions.map((tool) => [tool.name, tool.description, Buffer.from(tool.inputSchema).toString("base64")]),
         routing,
         baseUrl,
         workspaceCwd: resolveWorkspaceCwd(options?.sessionId),
@@ -753,9 +751,4 @@ function resumeBridge(state: RunState, parsed: ParsedConversation): void {
     state.writer?.finish("error", `Cursor stream idle timeout after ${streamIdleTimeoutMs()}ms without upstream progress`);
   });
   startHeartbeat(bridge);
-}
-
-/** Test/diagnostic helper: a stable random id. */
-export function newRequestId(): string {
-  return randomUUID();
 }

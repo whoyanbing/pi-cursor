@@ -81,10 +81,6 @@ function decodeBase64(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value.replace(/\s/g, ""), "base64"));
 }
 
-function messageRole(message: { role: string }): string {
-  return message.role;
-}
-
 function isUserLikeRole(role: string): boolean {
   return (
     role === "user" ||
@@ -145,8 +141,7 @@ export function parseConversation(context: Context): ParsedConversation {
 
   const messages: Message[] = context.messages ?? [];
   for (const message of messages) {
-    const role = messageRole(message);
-    if (isUserLikeRole(role)) {
+    if (isUserLikeRole(message.role)) {
       // A new user-like message (including Pi compaction summaries) closes the previous turn.
       if (message.role === "user") {
         current = {
@@ -204,7 +199,7 @@ export function parseConversation(context: Context): ParsedConversation {
   }
 
   const last = messages[messages.length - 1];
-  if (!last || isUserLikeRole(messageRole(last))) {
+  if (!last || isUserLikeRole(last.role)) {
     const actionTurn = current ?? { userText: "", userImages: [], steps: [] };
     // The trailing user turn is the action, not history.
     const completed = turns.slice(0, -1);

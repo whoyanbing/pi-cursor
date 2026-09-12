@@ -47,15 +47,8 @@ export function shouldCloseTransportOnShutdown(reason: string): boolean {
   return reason === "quit" || reason === "reload";
 }
 
-function registerCursorApi(): void {
-  registerApiProvider(
-    { api: CURSOR_API, stream: streamCursor, streamSimple: streamCursor },
-    "pi-cursor",
-  );
-}
-
 export default function (pi: ExtensionAPI): void {
-  registerCursorApi();
+  registerApiProvider({ api: CURSOR_API, stream: streamCursor, streamSimple: streamCursor }, "pi-cursor");
   // Off the request path: resolve the local CLI version before the first turn.
   void prewarmClientVersion();
 

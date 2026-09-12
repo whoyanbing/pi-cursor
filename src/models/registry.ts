@@ -28,10 +28,6 @@ export function setRouting(entries: Map<string, RoutingEntry>): void {
   for (const [id, entry] of entries) registry.set(id, entry);
 }
 
-export function upsertRouting(id: string, entry: RoutingEntry): void {
-  registry.set(id, entry);
-}
-
 export function lookupRouting(modelId: string): RoutingEntry | undefined {
   return registry.get(modelId);
 }

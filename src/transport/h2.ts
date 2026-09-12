@@ -20,6 +20,7 @@ import {
   clientVersion,
   connectTimeoutMs,
 } from "../config.js";
+import { asBuffer } from "./connect.js";
 
 export interface StreamEndInfo {
   /** True when the server ended the stream with a 2xx status. */
@@ -195,46 +196,15 @@ function waitForHandshake(
 
   return new Promise((resolve, reject) => {
     let settled = false;
-    // `session.socket` is a Proxy over the underlying net.Socket. Once the
-    // session tears down, any property access on it (e.g. `.off`, `.once`)
-    // throws ERR_HTTP2_SOCKET_UNBOUND instead of returning undefined, so
-    // every use below must be guarded — `finish()` runs from the session's
-    // own `close`/`error` handlers, i.e. exactly when the socket is unbound.
-    let socket: { off?: unknown; once?: unknown; setTimeout?: unknown } | undefined;
-    try {
-      socket = entry.session.socket as unknown as typeof socket;
-    } catch {
-      socket = undefined;
-    }
+    // One plain timer is enough: `request()` is deferred until SETTINGS, so a
+    // hung TCP handshake cannot block the event loop and starve it.
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
-      // EventEmitter.off never throws, even after teardown.
       entry.session.off("remoteSettings", onReady);
       entry.session.off("close", onDead);
       entry.session.off("error", onDead);
       if (timer) clearTimeout(timer);
-      try {
-        entry.session.setTimeout(0);
-      } catch {
-        // Some test fakes omit setTimeout.
-      }
-      if (socket) {
-        try {
-          (socket.off as ((event: string, listener: () => void) => void) | undefined)?.call(
-            socket,
-            "timeout",
-            onSocketTimeout,
-          );
-        } catch {
-          // Proxy throws ERR_HTTP2_SOCKET_UNBOUND after session teardown.
-        }
-        try {
-          (socket.setTimeout as ((ms: number) => void) | undefined)?.call(socket, 0);
-        } catch {
-          // Socket already gone.
-        }
-      }
       signal?.removeEventListener("abort", onAbort);
       fn();
     };
@@ -249,28 +219,7 @@ function waitForHandshake(
         reject(new Error(`Cursor connect timeout after ${timeout}ms (${rpcPath})`));
       });
     };
-    const onSocketTimeout = (): void => onTimeout();
     const timer = timeout > 0 ? setTimeout(onTimeout, timeout) : null;
-    if (timeout > 0) {
-      try {
-        entry.session.setTimeout(timeout, onTimeout);
-      } catch {
-        // Fake sessions used in tests may not implement setTimeout.
-      }
-      try {
-        (socket as { setTimeout?: (ms: number) => void } | undefined)?.setTimeout?.(timeout);
-      } catch {
-        // Socket not yet attached, or already unbound.
-      }
-      try {
-        (socket as { once?: (event: string, listener: () => void) => void } | undefined)?.once?.(
-          "timeout",
-          onSocketTimeout,
-        );
-      } catch {
-        // Proxy throws ERR_HTTP2_SOCKET_UNBOUND after session teardown.
-      }
-    }
 
     entry.session.once("remoteSettings", onReady);
     entry.session.once("close", onDead);
@@ -347,15 +296,14 @@ function openRawStream(baseUrl: string, options: OpenStreamOptions): RpcStream {
       if (isErrorStatus()) {
         const room = MAX_ERROR_BODY_BYTES - errorBytes;
         if (room > 0) {
-          const kept = Buffer.from(chunk).subarray(0, room);
+          const kept = chunk.subarray(0, room);
           errorChunks.push(kept);
           errorBytes += kept.byteLength;
         }
         return;
       }
-      const payload = Buffer.from(chunk);
-      if (cbs.data) cbs.data(payload);
-      else queued.push(payload);
+      if (cbs.data) cbs.data(chunk);
+      else queued.push(chunk);
     });
 
     next.on("end", () => {
@@ -384,7 +332,7 @@ function openRawStream(baseUrl: string, options: OpenStreamOptions): RpcStream {
 
     for (const frame of pendingWrites) {
       if (finished || next.destroyed || next.closed) break;
-      next.write(Buffer.from(frame));
+      next.write(asBuffer(frame));
     }
     pendingWrites.length = 0;
     if (halfClosed && !next.destroyed && !next.closed) {
@@ -426,7 +374,7 @@ function openRawStream(baseUrl: string, options: OpenStreamOptions): RpcStream {
         pendingWrites.push(frame);
         return;
       }
-      stream.write(Buffer.from(frame));
+      stream.write(asBuffer(frame));
     },
     end() {
       halfClosed = true;
