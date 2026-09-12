@@ -19,12 +19,11 @@ import {
   type AgentServerMessage,
 } from "../proto/agent_pb.js";
 import type { RunStream } from "../transport/client.js";
-import { clearAllBridges, peekBridge } from "../protocol/bridge.js";
 import { encodeArgs } from "../protocol/request.js";
 import { streamCursor } from "../protocol/stream.js";
 import { buildConversationId } from "../protocol/conversation-id.js";
-import { clearAllUsage } from "../protocol/usage.js";
 import { parseConversation } from "../protocol/context.js";
+import { clearAllUsage } from "../protocol/usage.js";
 
 // ── Fake transport ───────────────────────────────────────────────────────────
 
@@ -305,31 +304,27 @@ function lastStream(): FakeStream {
 
 const sessionId = "session-1";
 
-function conversationIdFor(messages: Context["messages"], modelId = "gpt-5"): string {
-  return buildConversationId(parseConversation(makeContext(messages)), modelId, sessionId);
-}
-
 beforeEach(() => {
   transport.streams = [];
   transport.failOpen = null;
-  clearAllBridges();
   clearAllUsage();
 });
 
 afterEach(() => {
-  clearAllBridges();
   clearAllUsage();
   vi.clearAllMocks();
 });
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe("parked bridge configuration", () => {
-  it.each(["add tool", "remove tool", "schema", "description", "prompt", "reasoning", "credential"])("rebuilds the Run after a change to %s", async (change) => {
+describe("stateless rebuild", () => {
+  it.each(["add tool", "remove tool", "schema", "description", "prompt", "reasoning", "credential"])("sends current %s on the next turn", async (change) => {
     const first = collect(streamCursor(makeModel(), makeContext([user("run")]), { apiKey: "t", sessionId, reasoning: "low" }));
-    const parked = lastStream();
-    parked.execMcp(1, "exec-1", "call_1", "bash", {});
+    const previous = lastStream();
+    previous.execMcp(1, "exec-1", "call_1", "bash", {});
     await first;
+    // The Run stream is torn down at toolUse, never parked.
+    expect(previous.destroyed).toBe(true);
     let nextTools = tools;
     if (change === "add tool") nextTools = [...tools, { name: "new_tool", description: "new", parameters: { type: "object" } } as Tool];
     if (change === "remove tool") nextTools = [];
@@ -345,7 +340,6 @@ describe("parked bridge configuration", () => {
     const fresh = lastStream();
     fresh.turnEnded();
     await second;
-    expect(parked.destroyed).toBe(true);
     expect(transport.streams).toHaveLength(2);
     const request = runRequestOf(fresh);
     expect(actionTextOf(request)).toBe("Continue.");
@@ -578,7 +572,7 @@ describe("streamCursor", () => {
     expect(message.content).toEqual([{ type: "text", text: "used the mcp tool instead" }]);
   });
 
-  it("parks a bridge and finalizes with toolUse on an MCP exec", async () => {
+  it("finalizes with toolUse and tears down the Run stream on an MCP exec", async () => {
     const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("run ls")]), { apiKey: "t", sessionId }));
     const stream = lastStream();
     stream.text("running");
@@ -592,11 +586,9 @@ describe("streamCursor", () => {
       { type: "toolCall", id: "call_1", name: "bash", arguments: { command: "ls" } },
     ]);
 
-    // The Run stream stays open, parked for the tool result.
-    expect(stream.alive).toBe(true);
-    const bridge = peekBridge(conversationIdFor([user("run ls")]));
-    expect(bridge).toBeDefined();
-    expect([...bridge!.pendingExecs.keys()]).toEqual(["call_1"]);
+    // The Run stream is torn down; the next call replays the result as history.
+    expect(stream.alive).toBe(false);
+    expect(stream.destroyed).toBe(true);
   });
 
   it("keeps estimated usage visible on toolUse without a checkpoint", async () => {
@@ -613,7 +605,7 @@ describe("streamCursor", () => {
     expect(message.usage.totalTokens).toBe(message.usage.input + 11);
   });
 
-  it("parks one turn with parallel MCP execs from the same tick", async () => {
+  it("emits parallel MCP execs from the same tick in one toolUse turn", async () => {
     const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("run")]), { apiKey: "t", sessionId }));
     const stream = lastStream();
     stream.execMcp(1, "exec-1", "call_1", "bash", { command: "ls" });
@@ -625,83 +617,74 @@ describe("streamCursor", () => {
       { type: "toolCall", id: "call_1", name: "bash", arguments: { command: "ls" } },
       { type: "toolCall", id: "call_2", name: "bash", arguments: { command: "pwd" } },
     ]);
-    expect([...peekBridge(conversationIdFor([user("run")]))!.pendingExecs.keys()]).toEqual(["call_1", "call_2"]);
+    expect(stream.destroyed).toBe(true);
   });
 
-  it("surfaces a park-time transport error on the next call", async () => {
-    const first = collect(streamCursor(makeModel(), makeContext([user("run")]), { apiKey: "t", sessionId }));
+  it("surfaces a mid-turn transport error immediately", async () => {
+    const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("run")]), { apiKey: "t", sessionId }));
     const stream = lastStream();
-    stream.execMcp(1, "exec-1", "call_1", "bash", {});
-    await first;
+    stream.text("partial");
     stream.transportError("socket hang up");
 
-    const resumed = makeContext([
-      user("run"),
-      assistantToolCall("call_1", "bash", {}),
-      toolResult("call_1", "bash", "ok"),
-    ]);
-    const second = collect(streamCursor(makeModel(), resumed, { apiKey: "t", sessionId }));
-    expect(transport.streams).toHaveLength(1);
-    const message = errorMessage(await second);
+    const message = errorMessage(await eventsPromise);
+    expect(message.stopReason).toBe("error");
     expect(message.errorMessage).toMatch(/socket hang up/);
+
+    // The failed run poisons nothing: the next call starts a new stream.
+    const retry = collect(streamCursor(makeModel(), makeContext([user("run again")]), { apiKey: "t", sessionId }));
+    const fresh = lastStream();
+    expect(fresh).not.toBe(stream);
+    fresh.turnEnded();
+    expect(doneMessage(await retry).stopReason).toBe("stop");
   });
 
-  it("resumes a parked bridge with the tool result inline", async () => {
+  it("replays tool results as history on the next call", async () => {
     const context = makeContext([user("run ls")]);
     const first = collect(streamCursor(makeModel(), context, { apiKey: "t", sessionId }));
     const stream = lastStream();
     stream.execMcp(9, "exec-1", "call_1", "bash", { command: "ls" });
     await first;
 
-    // Pi executed the tool; the next call carries the result.
+    // Pi executed the tool; the next call rebuilds with the result as history.
     const resumedContext = makeContext([user("run ls"), assistantToolCall("call_1", "bash", { command: "ls" }), toolResult("call_1", "bash", "file.txt")]);
     const second = collect(streamCursor(makeModel(), resumedContext, { apiKey: "t", sessionId }));
 
-    // No new stream: the exec answer went out on the parked one.
-    expect(transport.streams).toHaveLength(1);
-    await vi.waitFor(() => expect(stream.written.length).toBe(2));
-    const answer = execReplyOf(stream);
-    expect(answer.execId).toBe("exec-1");
-    expect(answer.id).toBe(9);
-    const mcpResult = answer.message;
-    expect(mcpResult.case).toBe("mcpResult");
-    if (mcpResult.case !== "mcpResult") throw new Error("expected mcpResult");
-    expect(mcpResult.value.result.case).toBe("success");
+    expect(transport.streams).toHaveLength(2);
+    const fresh = lastStream();
+    const run = runRequestOf(fresh);
+    expect(actionTextOf(run)).toBe("Continue.");
+    expect(run.conversationState!.turns).toHaveLength(1);
 
-    stream.text("done");
-    stream.turnEnded();
+    fresh.text("done");
+    fresh.turnEnded();
     const message = doneMessage(await second);
     expect(message.stopReason).toBe("stop");
     expect(message.content).toEqual([{ type: "text", text: "done" }]);
-    expect(peekBridge(conversationIdFor([user("run ls")]))).toBeUndefined();
   });
 
-  it("marks an errored tool result as an MCP error", async () => {
+  it("replays an errored tool result as history on the next call", async () => {
     const first = collect(streamCursor(makeModel(), makeContext([user("run")]), { apiKey: "t", sessionId }));
-    const stream = lastStream();
-    stream.execMcp(3, "exec-2", "call_9", "bash", { command: "false" });
+    lastStream().execMcp(3, "exec-2", "call_9", "bash", { command: "false" });
     await first;
 
     const resumed = makeContext([user("run"), assistantToolCall("call_9", "bash", { command: "false" }), toolResult("call_9", "bash", "exit 1", true)]);
     const second = collect(streamCursor(makeModel(), resumed, { apiKey: "t", sessionId }));
-    await vi.waitFor(() => expect(stream.written.length).toBe(2));
-    const mcpResult = execReplyOf(stream).message;
-    if (mcpResult.case !== "mcpResult") throw new Error("expected mcpResult");
-    expect(mcpResult.value.result.case).toBe("error");
-    stream.turnEnded();
-    await second;
+    expect(transport.streams).toHaveLength(2);
+    const fresh = lastStream();
+    // The failed result rides along as replayed history, then generation continues.
+    expect(actionTextOf(runRequestOf(fresh))).toBe("Continue.");
+    fresh.text("handled the failure");
+    fresh.turnEnded();
+    expect(doneMessage(await second).content).toEqual([{ type: "text", text: "handled the failure" }]);
   });
 
-  it("rebuilds from context when no bridge can be resumed", async () => {
-    // First turn parks a bridge...
+  it("continues tool turns with a synthetic Continue action", async () => {
+    // First turn ends at toolUse and its Run stream is torn down...
     const first = collect(streamCursor(makeModel(), makeContext([user("run")]), { apiKey: "t", sessionId }));
-    const parked = lastStream();
-    parked.execMcp(1, "exec-1", "call_1", "bash", {});
+    lastStream().execMcp(1, "exec-1", "call_1", "bash", {});
     await first;
 
-    // ...but the bridge dies before Pi returns with the result.
-    parked.destroy();
-
+    // ...then the next call folds the in-flight turn into history.
     const resumed = makeContext([user("run"), assistantToolCall("call_1", "bash", {}), toolResult("call_1", "bash", "ok")]);
     const second = collect(streamCursor(makeModel(), resumed, { apiKey: "t", sessionId }));
 

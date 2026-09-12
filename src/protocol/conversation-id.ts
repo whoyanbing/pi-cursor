@@ -1,8 +1,9 @@
 /**
- * Cursor conversation ids must stay stable inside a turn (so a parked tool
- * bridge can resume) but rotate after Pi compaction. Compaction rewrites the
- * prompt Pi sends; if the id stays the same, Cursor keeps the pre-compact
- * transcript and `usedTokens` never drops — Pi then re-triggers compact.
+ * Cursor conversation ids must stay stable across the sub-turns of one Pi turn
+ * (usage checkpoints are keyed by id) but rotate after Pi compaction.
+ * Compaction rewrites the prompt Pi sends; if the id stays the same, Cursor
+ * keeps the pre-compact transcript and `usedTokens` never drops — Pi then
+ * re-triggers compact.
  */
 import { createHash, randomUUID } from "node:crypto";
 import type { ParsedConversation } from "./context.js";
@@ -21,8 +22,8 @@ export function __clearConversationIdCacheForTests(): void {
   fallbackCache.clear();
 }
 
-/** Stable within the process (bridge resume keeps working); restarts rotate
- * so a new Pi process never resumes a stale server-side transcript. */
+/** Stable within the process; restarts rotate so a new Pi process never
+ * reuses a stale server-side transcript. */
 function fallbackId(key: string): string {
   const hit = fallbackCache.get(key);
   if (hit) return hit;

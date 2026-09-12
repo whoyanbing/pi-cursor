@@ -45,20 +45,6 @@ export function streamIdleTimeoutMs(): number {
   return envInt("PI_CURSOR_STREAM_IDLE_TIMEOUT_MS", 180_000);
 }
 
-/**
- * `PI_CURSOR_BRIDGE=0` drops the Run stream at every tool call instead of
- * parking it, so the next call always rebuilds. Exists to measure whether the
- * bridge machinery pays for itself: compare `lastFirstTokenMs` in
- * /cursor.doctor with it on and off.
- */
-export function bridgeEnabled(): boolean {
-  return process.env.PI_CURSOR_BRIDGE?.trim() !== "0";
-}
-
-/** How long a paused bridge (waiting on pi to execute tools) may stay open. */
-export function bridgeMaxPauseMs(): number {
-  return envInt("PI_CURSOR_BRIDGE_PAUSE_MS", 15 * 60_000);
-}
 
 /** Client heartbeat cadence on an open Run stream. */
 export function heartbeatIntervalMs(): number {

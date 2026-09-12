@@ -1,72 +1,33 @@
 /**
  * `streamCursor` — the Pi `streamSimple` implementation for Cursor's agent RPC.
  *
- * Per call, one of two things happens:
- *
- *   1. **Resume** — the trailing tool results answer the execs a parked bridge
- *      is waiting on, so they go inline on the still-open Run stream and the
- *      turn continues where it left off.
- *   2. **Fresh request** — the conversation is rebuilt from Pi's context
- *      (system prompt + completed turns as prompt-history blobs, in-flight
- *      turn folded in, synthetic "Continue." when resuming without a bridge)
- *      and sent over a new Run stream.
- *
- * When the server asks for an MCP tool mid-turn, the tool call is emitted into
- * the assistant message, the Pi stream finalizes with `toolUse`, and the Run
- * stream is parked as a bridge for the next call to answer.
+ * Every call is stateless: the conversation is rebuilt from Pi's context
+ * (system prompt + completed turns as prompt-history blobs, in-flight turn
+ * folded in, synthetic "Continue." after tool results) and sent over a new
+ * Run stream. When the server asks for an MCP tool mid-turn, the tool call is
+ * emitted into the assistant message, the Pi stream finalizes with `toolUse`,
+ * and this Run stream is torn down — the next call carries the tool results
+ * as replayed history.
  */
-import { createHash } from "node:crypto";
-import type {
-  Api,
-  AssistantMessage,
-  AssistantMessageEventStream,
-  Context,
-  Model,
-  SimpleStreamOptions,
-  StopReason,
-  TextContent,
-  ThinkingContent,
-  ToolCall,
-} from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, SimpleStreamOptions, StopReason, TextContent, ThinkingContent, ToolCall } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { create } from "@bufbuild/protobuf";
-import {
-  AgentClientMessageSchema,
-  ClientHeartbeatSchema,
-  type AgentClientMessage,
-  type McpToolDefinition,
-} from "../proto/agent_pb.js";
-import { CONTINUE_TEXT, bridgeEnabled, getAgentUrl, heartbeatIntervalMs, streamIdleTimeoutMs } from "../config.js";
-import { openRun } from "../transport/client.js";
+import { AgentClientMessageSchema, ClientHeartbeatSchema, type AgentClientMessage, type McpToolDefinition } from "../proto/agent_pb.js";
+import { openRun, type RunStream } from "../transport/client.js";
+import { CONTINUE_TEXT, getAgentUrl, heartbeatIntervalMs, streamIdleTimeoutMs } from "../config.js";
 import { resolveAccessToken } from "../auth/credentials.js";
 import { resolveRouteTarget } from "../models/registry.js";
 import { recordRun } from "../diagnostics.js";
-import {
-  destroyBridge,
-  isBridgeExpired,
-  bridgeMatchesResults,
-  peekBridge,
-  storeBridge,
-  sweepBridges,
-  takeBridge,
-  type Bridge,
-  type PendingExec,
-} from "./bridge.js";
-import { parseConversation, type ImagePart, type ParsedConversation, type ToolResultPayload } from "./context.js";
+import { parseConversation, type ImagePart, type ParsedConversation } from "./context.js";
 import { buildConversationId } from "./conversation-id.js";
-import { buildExecResult } from "./exec-result.js";
 import { buildRunRequest, type ModelRouting } from "./request.js";
 import { handleServerMessage, type ServerHandlers } from "./server.js";
 import { ThinkingTagParser } from "./thinking.js";
 import { buildToolDefinitions } from "./tools.js";
-import {
-  cachedInputTokens,
-  contextInputTokens,
-  estimatePromptTokens,
-  stabilizeInputTokens,
-} from "./usage.js";
+import { cachedInputTokens, contextInputTokens, estimatePromptTokens, stabilizeInputTokens } from "./usage.js";
 import { resolveWorkspaceCwd } from "../workspace.js";
-
+import type { BlobStore } from "./blobs.js";
+interface PendingExec { execMsgId: number; execId: string; toolCallId: string; toolName: string; arguments: Record<string, unknown>; surfaced: boolean; }
 function emptyUsage(): AssistantMessage["usage"] {
   return {
     input: 0,
@@ -293,20 +254,8 @@ class TurnWriter {
   }
 }
 
-interface RunState {
-  bridge: Bridge | null;
-  writer: TurnWriter | null;
-  outputTokens: number;
-  lastWorkAt: number;
-  watchdog: ReturnType<typeof setInterval> | null;
-  parkQueued: boolean;
-  /** streamCursor() entry time; cleared once first-token latency is recorded. */
-  startedAt: number;
-}
-
-function newRunState(writer: TurnWriter, bridge: Bridge | null, startedAt: number): RunState {
-  return { bridge, writer, outputTokens: 0, lastWorkAt: Date.now(), watchdog: null, parkQueued: false, startedAt };
-}
+interface RunState { rpc: RunStream; blobs: BlobStore; toolDefinitions: McpToolDefinition[]; pendingExecs: Map<string, PendingExec>; conversationId: string; heartbeatTimer: ReturnType<typeof setInterval> | null; writer: TurnWriter | null; outputTokens: number; lastWorkAt: number; watchdog: ReturnType<typeof setInterval> | null; toolCallQueued: boolean; startedAt: number; }
+function newRunState(writer: TurnWriter, rpc: RunStream, blobs: BlobStore, toolDefinitions: McpToolDefinition[], conversationId: string, startedAt: number): RunState { return { rpc, blobs, toolDefinitions, pendingExecs: new Map(), conversationId, heartbeatTimer: null, writer, outputTokens: 0, lastWorkAt: Date.now(), watchdog: null, toolCallQueued: false, startedAt }; }
 
 function markFirstOutput(state: RunState): void {
   if (state.startedAt <= 0) return;
@@ -322,23 +271,8 @@ function heartbeatMessage(): AgentClientMessage {
   });
 }
 
-function startHeartbeat(bridge: Bridge): void {
-  const interval = heartbeatIntervalMs();
-  if (bridge.heartbeatTimer || interval <= 0) return;
-  bridge.heartbeatTimer = setInterval(() => {
-    if (!bridge.rpc.alive) {
-      if (bridge.heartbeatTimer) clearInterval(bridge.heartbeatTimer);
-      bridge.heartbeatTimer = null;
-      return;
-    }
-    try {
-      bridge.rpc.send(heartbeatMessage());
-    } catch {
-      // A failed heartbeat is surfaced by the transport error path.
-    }
-  }, interval);
-  bridge.heartbeatTimer.unref?.();
-}
+function startHeartbeat(state: RunState): void { const interval = heartbeatIntervalMs(); if (state.heartbeatTimer || interval <= 0) return; state.heartbeatTimer = setInterval(() => { if (!state.rpc.alive) { stopHeartbeat(state); return; } try { state.rpc.send(heartbeatMessage()); } catch { } }, interval); state.heartbeatTimer.unref?.(); }
+function stopHeartbeat(state: RunState): void { if (state.heartbeatTimer) clearInterval(state.heartbeatTimer); state.heartbeatTimer = null; }
 
 function armWatchdog(state: RunState, onTimeout: () => void): void {
   const timeout = streamIdleTimeoutMs();
@@ -363,183 +297,18 @@ function stopWatchdog(state: RunState): void {
   state.watchdog = null;
 }
 
-function flushPendingToolCalls(state: RunState): void {
-  const writer = state.writer;
-  const bridge = state.bridge;
-  if (!writer || writer.closed || !bridge) return;
-  const batch = [...bridge.pendingExecs.values()].filter((exec) => !exec.surfaced);
-  if (batch.length === 0) return;
-  for (const exec of batch) {
-    exec.surfaced = true;
-    writer.toolCall(exec);
-  }
-  parkBridge(state);
-}
-
-/** Collect parallel MCP execs that arrive in the same turn before parking. */
-function queuePark(state: RunState): void {
-  if (state.parkQueued) return;
-  if (!state.writer || state.writer.closed) return;
-  state.parkQueued = true;
-  queueMicrotask(() => {
-    state.parkQueued = false;
-    flushPendingToolCalls(state);
-  });
-}
-
-function failParkedBridge(state: RunState, message: string): void {
-  recordRun({ lastError: message });
-  const writer = state.writer;
-  if (writer && !writer.closed) {
-    dropBridge(state);
-    writer.finish("error", message);
-    return;
-  }
-  const bridge = state.bridge;
-  if (!bridge) return;
-  bridge.parkError = message;
-  if (bridge.heartbeatTimer) {
-    clearInterval(bridge.heartbeatTimer);
-    bridge.heartbeatTimer = null;
-  }
-  try {
-    bridge.rpc.destroy();
-  } catch {
-    // Already gone.
-  }
-}
-
-/** Park the bridge: finalize the writer with toolUse and wait for Pi's results. */
-function parkBridge(state: RunState): void {
-  const writer = state.writer;
-  const bridge = state.bridge;
-  state.writer = null;
-  if (!bridgeEnabled()) {
-    dropBridge(state);
-  } else if (bridge) {
-    bridge.pausedAt = Date.now();
-    startHeartbeat(bridge);
-    stopWatchdog(state);
-  }
-  if (writer && !writer.closed) writer.finish("toolUse");
-}
-
-function dropBridge(state: RunState): void {
-  stopWatchdog(state);
-  if (state.bridge) {
-    // Unregister too: a finished turn must not be resumable. Only drop the
-    // registry slot when it still points at this bridge.
-    if (peekBridge(state.bridge.conversationId) === state.bridge) {
-      takeBridge(state.bridge.conversationId);
-    }
-    destroyBridge(state.bridge);
-  }
-  state.bridge = null;
-}
+function endRun(state: RunState): void { stopWatchdog(state); stopHeartbeat(state); try { state.rpc.destroy(); } catch { } }
+function finishToolUse(state: RunState): void { const writer = state.writer; state.writer = null; endRun(state); if (writer && !writer.closed) writer.finish("toolUse"); }
+function flushPendingToolCalls(state: RunState): void { const writer = state.writer; if (!writer || writer.closed) return; const batch = [...state.pendingExecs.values()].filter((exec) => !exec.surfaced); if (batch.length === 0) return; for (const exec of batch) { exec.surfaced = true; writer.toolCall(exec); } finishToolUse(state); }
+function queueToolCalls(state: RunState): void { if (state.toolCallQueued) return; if (!state.writer || state.writer.closed) return; state.toolCallQueued = true; queueMicrotask(() => { state.toolCallQueued = false; flushPendingToolCalls(state); }); }
+function failRun(state: RunState, message: string): void { recordRun({ lastError: message }); const writer = state.writer; state.writer = null; endRun(state); if (writer && !writer.closed) writer.finish("error", message); }
 /**
  * Wire transport + protocol handlers to the current run state.
- * RunStream.onMessage / onEnd / onError assign (they do not stack); calling
- * this again on resume replaces the previous handlers rather than duplicating.
+ * RunStream.onMessage / onEnd / onError assign (they do not stack).
  */
-function attachTransport(state: RunState): void {
-  const bridge = state.bridge!;
-  const handlers = makeHandlers(state);
+function attachTransport(state: RunState): void { const handlers = makeHandlers(state); state.rpc.onMessage((message) => { try { handleServerMessage(message, handlers); } catch (error) { failRun(state, `Cursor stream handling failed: ${error instanceof Error ? error.message : String(error)}`); } }); state.rpc.onEnd(() => { if (state.writer) { const writer = state.writer; state.writer = null; endRun(state); writer.finish("stop"); } else { failRun(state, "Cursor ended the stream before the turn completed."); } }); state.rpc.onError((error) => { failRun(state, error.message); }); }
 
-  bridge.rpc.onMessage((message) => {
-    try {
-      handleServerMessage(message, handlers);
-    } catch (error) {
-      failParkedBridge(state, `Cursor stream handling failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  });
-
-  bridge.rpc.onEnd(() => {
-    // Clean end without turnEnded: if a writer is live, close it out. A parked
-    // bridge whose stream ended cannot be resumed — keep the error so the next
-    // call surfaces it instead of silently rebuilding.
-    if (state.writer) {
-      dropBridge(state);
-      state.writer.finish("stop");
-    } else {
-      failParkedBridge(state, "Cursor ended the stream while waiting for tool results.");
-    }
-  });
-
-  bridge.rpc.onError((error) => {
-    failParkedBridge(state, error.message);
-  });
-}
-
-function makeHandlers(state: RunState): ServerHandlers {
-  const bridge = state.bridge!;
-  const markWork = (): void => {
-    state.lastWorkAt = Date.now();
-  };
-
-  return {
-    blobs: bridge.blobs,
-    toolDefinitions: bridge.toolDefinitions,
-    onText(text) {
-      markWork();
-      markFirstOutput(state);
-      state.writer?.text(text);
-    },
-    onThinking(text) {
-      markWork();
-      markFirstOutput(state);
-      state.writer?.thinking(text);
-    },
-    onTokenDelta(tokens) {
-      markWork();
-      state.outputTokens += tokens;
-      state.writer?.addOutputTokens(tokens);
-    },
-    onUsage(usedTokens) {
-      markWork();
-      const stable = stabilizeInputTokens(bridge.conversationId, usedTokens);
-      state.writer?.setInputTokens(stable);
-    },
-    onTurnEnded() {
-      markWork();
-      recordRun({ lastTurnEndedAt: Date.now() });
-      if (state.writer) {
-        dropBridge(state);
-        state.writer.finish("stop");
-        return;
-      }
-      failParkedBridge(state, "Cursor ended the turn while waiting for tool results.");
-    },
-    onToolCall(call) {
-      markWork();
-      markFirstOutput(state);
-      const pending: PendingExec = { ...call, surfaced: false };
-      bridge.pendingExecs.set(call.toolCallId, pending);
-      if (state.writer && !state.writer.closed) queuePark(state);
-      // No live writer (arrived after a pause): stays pending and is surfaced
-      // when the next call resumes the bridge.
-    },
-    onError(message) {
-      failParkedBridge(state, message);
-    },
-    onLiveness() {
-      markWork();
-    },
-    send(clientMessage) {
-      markWork();
-      bridge.rpc.send(clientMessage);
-    },
-  };
-}
-
-function collectToolResults(parsed: ParsedConversation): Map<string, ToolResultPayload> {
-  const results = new Map<string, ToolResultPayload>();
-  for (const turn of parsed.completedTurns) {
-    for (const step of turn.steps) {
-      if (step.kind === "toolCall" && step.result) results.set(step.toolCallId, step.result);
-    }
-  }
-  return results;
-}
+function makeHandlers(state: RunState): ServerHandlers { const markWork = (): void => { state.lastWorkAt = Date.now(); }; return { blobs: state.blobs, toolDefinitions: state.toolDefinitions, onText(text) { markWork(); markFirstOutput(state); state.writer?.text(text); }, onThinking(text) { markWork(); markFirstOutput(state); state.writer?.thinking(text); }, onTokenDelta(tokens) { markWork(); state.outputTokens += tokens; state.writer?.addOutputTokens(tokens); }, onUsage(usedTokens) { markWork(); state.writer?.setInputTokens(stabilizeInputTokens(state.conversationId, usedTokens)); }, onTurnEnded() { markWork(); recordRun({ lastTurnEndedAt: Date.now() }); if (state.writer) { const writer = state.writer; state.writer = null; endRun(state); writer.finish("stop"); } else { failRun(state, "Cursor ended the turn with no live writer."); } }, onToolCall(call) { markWork(); markFirstOutput(state); state.pendingExecs.set(call.toolCallId, { ...call, surfaced: false }); if (state.writer && !state.writer.closed) queueToolCalls(state); }, onError(message) { failRun(state, message); }, onLiveness() { markWork(); }, send(clientMessage) { markWork(); state.rpc.send(clientMessage); } }; }
 
 export function streamCursor(
   model: Model<Api>,
@@ -549,11 +318,7 @@ export function streamCursor(
   const stream = createAssistantMessageEventStream();
   let state: RunState | null = null;
   let writer: TurnWriter;
-  const abortRun = (): void => {
-    if (writer.closed) return;
-    if (state) dropBridge(state);
-    writer.finish("aborted", "Aborted");
-  };
+  const abortRun = (): void => { if (writer.closed) return; if (state) endRun(state); writer.finish("aborted", "Aborted"); };
   writer = new TurnWriter(model, stream, () => {
     options?.signal?.removeEventListener("abort", abortRun);
   });
@@ -587,52 +352,19 @@ export function streamCursor(
       // pi-ai<0.85 lacks the field; pi>=0.85 reads it for the thinking badge.
       (writer.output as { providerThinkingLevel?: string }).providerThinkingLevel = rawId;
       const baseUrl = getAgentUrl();
-      // A parked Run still holds its original prompt/tool/model configuration.
-      // Rebuild instead of resuming when Pi changes any of those between tools.
-      // Hash the token too so an account change cannot reuse another account's
-      // stream; never retain the raw credential in the bridge registry.
-      const requestFingerprint = createHash("sha256").update(JSON.stringify({
-        systemPrompt: parsed.systemPrompt,
-        // inputSchema is bytes; JSON.stringify would expand it ~4x as an index map.
-        tools: toolDefinitions.map((tool) => [tool.name, tool.description, Buffer.from(tool.inputSchema).toString("base64")]),
-        routing,
-        baseUrl,
-        workspaceCwd: resolveWorkspaceCwd(options?.sessionId),
-        token,
-      })).digest("hex");
-
-      sweepBridges();
-
-      const existing = takeBridge(conversationId);
-      if (existing) {
-        if (existing.parkError) {
-          const message = existing.parkError;
-          destroyBridge(existing);
-          writer.finish("error", message);
-          return;
-        }
-        const resumable =
-          parsed.isToolContinuation &&
-          existing.requestFingerprint === requestFingerprint &&
-          !isBridgeExpired(existing) &&
-          existing.rpc.alive &&
-          bridgeMatchesResults(existing, parsed.answeredToolCallIds);
-        if (resumable) {
-          state = newRunState(writer, existing, startedAt);
-          recordRun({ lastRunMode: "resume" });
-          resumeBridge(state, parsed);
-          return;
-        }
-        destroyBridge(existing);
-      }
-
-      state = newRunState(writer, null, startedAt);
-      recordRun({ lastRunMode: "fresh" });
-      startFresh(state, parsed, toolDefinitions, conversationId, token, baseUrl, routing, requestFingerprint, options?.sessionId);
+      const actionText = parsed.action.kind === "userMessage" ? parsed.action.text : CONTINUE_TEXT;
+      const actionImages: readonly ImagePart[] = parsed.action.kind === "userMessage" ? parsed.action.images : [];
+      const built = buildRunRequest({ systemPrompt: parsed.systemPrompt, completedTurns: parsed.completedTurns, actionText, actionImages, toolDefinitions, routing, conversationId, workspaceCwd: resolveWorkspaceCwd(options?.sessionId) });
+      state = newRunState(writer, openRun(baseUrl, token), built.blobs, toolDefinitions, conversationId, startedAt);
+      recordRun({ lastEndpoint: baseUrl, lastRpcPath: RUN_RPC, lastRequestBytes: built.bytes });
+      attachTransport(state);
+      armWatchdog(state, () => { failRun(state!, `Cursor stream idle timeout after ${streamIdleTimeoutMs()}ms without upstream progress`); });
+      startHeartbeat(state);
+      state.rpc.send(built.message);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       recordRun({ lastError: message });
-      if (state) dropBridge(state);
+      if (state) endRun(state);
       writer.finish("error", message);
     }
   })();
@@ -659,89 +391,4 @@ function resolveRouting(
     routing: { modelId: target.modelId, maxMode: target.maxMode, parameters: target.parameters },
     rawId: target.modelId,
   };
-}
-
-function startFresh(
-  state: RunState,
-  parsed: ParsedConversation,
-  toolDefinitions: McpToolDefinition[],
-  conversationId: string,
-  token: string,
-  baseUrl: string,
-  routing: ModelRouting,
-  requestFingerprint: string,
-  sessionId?: string,
-): void {
-  const actionText = parsed.action.kind === "userMessage" ? parsed.action.text : CONTINUE_TEXT;
-  const actionImages: readonly ImagePart[] = parsed.action.kind === "userMessage" ? parsed.action.images : [];
-
-  const built = buildRunRequest({
-    systemPrompt: parsed.systemPrompt,
-    completedTurns: parsed.completedTurns,
-    actionText,
-    actionImages,
-    toolDefinitions,
-    routing,
-    conversationId,
-    workspaceCwd: resolveWorkspaceCwd(sessionId),
-  });
-
-  const rpc = openRun(baseUrl, token);
-  const bridge: Bridge = {
-    rpc,
-    blobs: built.blobs,
-    toolDefinitions,
-    pendingExecs: new Map(),
-    conversationId,
-    baseUrl,
-    requestFingerprint,
-    pausedAt: Date.now(),
-    heartbeatTimer: null,
-  };
-  state.bridge = bridge;
-  storeBridge(conversationId, bridge);
-  recordRun({ lastEndpoint: baseUrl, lastRpcPath: RUN_RPC, lastRequestBytes: built.bytes });
-
-  attachTransport(state);
-  armWatchdog(state, () => {
-    dropBridge(state);
-    state.writer?.finish("error", `Cursor stream idle timeout after ${streamIdleTimeoutMs()}ms without upstream progress`);
-  });
-  startHeartbeat(bridge);
-
-  rpc.send(built.message);
-}
-
-function resumeBridge(state: RunState, parsed: ParsedConversation): void {
-  const bridge = state.bridge!;
-  bridge.pausedAt = Date.now();
-  storeBridge(bridge.conversationId, bridge);
-
-  const results = collectToolResults(parsed);
-  for (const toolCallId of parsed.answeredToolCallIds) {
-    const exec = bridge.pendingExecs.get(toolCallId);
-    if (!exec) continue;
-    const payload = results.get(toolCallId) ?? { content: "", images: [], isError: false };
-    bridge.rpc.send(buildExecResult(exec.execMsgId, exec.execId, payload));
-    bridge.pendingExecs.delete(toolCallId);
-  }
-
-  // Execs that arrived after the previous message finalized were never shown
-  // to Pi. Surface them now so this turn's message carries them.
-  const unsurfaced = [...bridge.pendingExecs.values()].filter((exec) => !exec.surfaced);
-  if (unsurfaced.length > 0 && state.writer) {
-    for (const exec of unsurfaced) {
-      exec.surfaced = true;
-      state.writer.toolCall(exec);
-    }
-    parkBridge(state);
-    return;
-  }
-
-  attachTransport(state);
-  armWatchdog(state, () => {
-    dropBridge(state);
-    state.writer?.finish("error", `Cursor stream idle timeout after ${streamIdleTimeoutMs()}ms without upstream progress`);
-  });
-  startHeartbeat(bridge);
 }

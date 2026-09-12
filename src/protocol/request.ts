@@ -60,7 +60,7 @@ export interface BuildRequestInput {
   toolDefinitions: McpToolDefinition[];
   routing: ModelRouting;
   conversationId: string;
-  /** Reuse a blob store across a bridge pause so KV answers keep working. */
+  /** Optional store to build on (content-addressed, so identical builds dedupe). */
   blobs?: BlobStore;
   /** Workspace directory for Cursor's previousWorkspaceUris (Pi session cwd). */
   workspaceCwd?: string;

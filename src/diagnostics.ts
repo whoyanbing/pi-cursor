@@ -5,11 +5,10 @@
  * sizes, counts, timestamps, and the most recent error message). Token values
  * are never recorded here.
  */
-import { activeBridgeCount } from "./protocol/bridge.js";
 import { registrySize } from "./models/registry.js";
 import { cacheInfo } from "./models/catalog.js";
 import { lastCredentialSource } from "./auth/credentials.js";
-import { bridgeEnabled, clientVersion, getAgentUrl } from "./config.js";
+import { clientVersion, getAgentUrl } from "./config.js";
 
 export interface RunDiagnostics {
   lastEndpoint?: string;
@@ -18,8 +17,6 @@ export interface RunDiagnostics {
   lastTurnEndedAt?: number;
   lastError?: string;
   runsStarted?: number;
-  /** "resume" when a parked bridge answered the tool results inline, else "fresh". */
-  lastRunMode?: string;
   /** Wall time from streamCursor() to the first model output on that run. */
   lastFirstTokenMs?: number;
 }
@@ -47,13 +44,12 @@ export function diagnosticsReport(tokenSource = lastCredentialSource() as string
     `tokenSource=${tokenSource}`,
     `registeredModels=${registrySize()}`,
     `modelCache=${cache.count} models, saved ${cache.savedAt ? ageMs(cache.savedAt) : "never"}, stale=${cache.stale ? "yes" : "no"}`,
-    `activeBridges=${activeBridgeCount()}`,
     `runsStarted=${state.runsStarted ?? 0}`,
     `lastRpc=${state.lastRpcPath ?? "none"}`,
     `lastEndpoint=${state.lastEndpoint ?? "none"}`,
     `lastRequestBytes=${state.lastRequestBytes ?? "none"}`,
     `lastTurnEnded=${ageMs(state.lastTurnEndedAt)}`,
-    `lastRun=${state.lastRunMode ?? "none"} firstToken=${state.lastFirstTokenMs === undefined ? "n/a" : `${state.lastFirstTokenMs}ms`} bridge=${bridgeEnabled() ? "on" : "off"}`,
+    `firstToken=${state.lastFirstTokenMs === undefined ? "n/a" : `${state.lastFirstTokenMs}ms`}`,
     `lastError=${state.lastError ?? "none"}`,
     `transport=connect-node/h2`,
     `commands=/cursor.model /cursor.usage /cursor.refresh /cursor.doctor`,

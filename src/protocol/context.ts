@@ -9,9 +9,8 @@
  *   - last messages are assistant/tool    → the turn is in flight; its tool
  *     results are the tail, and the action is a synthetic "Continue."
  *
- * The tail tool-call ids double as the resume key for a live bridge: when they
- * match a paused stream's pending execs, the answer goes inline on that stream
- * instead of rebuilding the whole conversation.
+ * Tool results in the tail are replayed as history: the in-flight turn is
+ * folded into `completedTurns` and the next request continues synthetically.
  */
 import type { Context, ImageContent, Message, TextContent, ToolCall } from "@earendil-works/pi-ai";
 
@@ -47,10 +46,6 @@ export interface ParsedConversation {
   completedTurns: ParsedTurn[];
   /** What the next request should ask for. */
   action: ConversationAction;
-  /** Tool-call ids answered by the trailing toolResult messages (resume key). */
-  answeredToolCallIds: string[];
-  /** True when trailing tool results follow an assistant tool-call message. */
-  isToolContinuation: boolean;
 }
 
 function textFromContent(content: string | (TextContent | ImageContent)[] | undefined): string {
@@ -190,14 +185,6 @@ export function parseConversation(context: Context): ParsedConversation {
     else turn.steps.push({ kind: "toolCall", toolCallId: message.toolCallId, toolName: message.toolName, arguments: {}, result: payload });
   }
 
-  // Trailing answered tool-call ids: contiguous toolResult messages at the tail.
-  const answeredToolCallIds: string[] = [];
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (message.role !== "toolResult") break;
-    answeredToolCallIds.unshift(message.toolCallId);
-  }
-
   const last = messages[messages.length - 1];
   if (!last || isUserLikeRole(last.role)) {
     const actionTurn = current ?? { userText: "", userImages: [], steps: [] };
@@ -211,8 +198,6 @@ export function parseConversation(context: Context): ParsedConversation {
       systemPrompt,
       completedTurns: completed,
       action: { kind: "userMessage", text: actionTurn.userText, images: actionTurn.userImages },
-      answeredToolCallIds,
-      isToolContinuation: false,
     };
   }
 
@@ -225,7 +210,5 @@ export function parseConversation(context: Context): ParsedConversation {
     systemPrompt,
     completedTurns: turns,
     action: { kind: "continue", turn: inFlight },
-    answeredToolCallIds,
-    isToolContinuation: answeredToolCallIds.length > 0,
   };
 }

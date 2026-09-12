@@ -13,7 +13,6 @@ import { resolveCredential } from "./auth/credentials.js";
 import { registerCursorCommands } from "./commands.js";
 import { shouldCancelThresholdCompact } from "./compaction-guard.js";
 import { cachedModels, startupCatalog, writeCache } from "./models/catalog.js";
-import { clearAllBridges, clearBridgesForSession } from "./protocol/bridge.js";
 import { discoverModels } from "./models/discovery.js";
 import { processAndRegister, processModels, toProviderModels } from "./models/processing.js";
 import { setRouting } from "./models/registry.js";
@@ -30,18 +29,7 @@ function clearCompactStatus(ctx: { ui: { setStatus: (key: string, text: string |
 }
 let lastRegisteredModels: ProcessedModel[] = [];
 
-function clearSessionRuntime(sessionId: string | undefined): void {
-  const id = sessionId?.trim();
-  if (id) {
-    clearBridgesForSession(id);
-    clearUsageForSession(id);
-    forgetSessionCwd(id);
-  } else {
-    clearAllBridges();
-    clearAllUsage();
-    clearWorkspaceCwds();
-  }
-}
+function clearSessionRuntime(sessionId: string | undefined): void { const id = sessionId?.trim(); if (id) { clearUsageForSession(id); forgetSessionCwd(id); } else { clearAllUsage(); clearWorkspaceCwds(); } }
 
 export function shouldCloseTransportOnShutdown(reason: string): boolean {
   return reason === "quit" || reason === "reload";
@@ -145,7 +133,7 @@ export default function (pi: ExtensionAPI): void {
   // Pi's between-turn compact check trusts last-assistant usage. Cursor writes
   // the pre-compact prompt size there, so a successful compact still looks like
   // 94%+ and immediately runs again. Skip until usage actually drops, and drop
-  // parked Run streams so the next call rebuilds from the summary. Other
+  // compacted prompt so the next call rebuilds from the summary. Other
   // providers are left alone — this hook is process-wide.
   pi.on("session_before_compact", (event, ctx) => {
     if (shouldCancelThresholdCompact(event, ctx.model?.provider)) return { cancel: true };

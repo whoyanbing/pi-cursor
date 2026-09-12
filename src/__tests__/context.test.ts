@@ -49,7 +49,6 @@ describe("parseConversation", () => {
     const parsed = parseConversation({ systemPrompt: "sys", messages: [user("hi")] });
     expect(parsed.action).toEqual({ kind: "userMessage", text: "hi", images: [] });
     expect(parsed.completedTurns).toHaveLength(0);
-    expect(parsed.isToolContinuation).toBe(false);
   });
 
   it("folds prior turns into history", () => {
@@ -63,7 +62,7 @@ describe("parseConversation", () => {
     expect(parsed.action).toMatchObject({ kind: "userMessage", text: "second" });
   });
 
-  it("detects a tool continuation from trailing results", () => {
+  it("folds trailing tool results into the in-flight turn", () => {
     const parsed = parseConversation({
       systemPrompt: "sys",
       messages: [
@@ -72,27 +71,11 @@ describe("parseConversation", () => {
         toolResult("call_1", "bash", "file.txt"),
       ],
     });
-    expect(parsed.isToolContinuation).toBe(true);
-    expect(parsed.answeredToolCallIds).toEqual(["call_1"]);
     expect(parsed.action).toMatchObject({ kind: "continue" });
     expect(parsed.completedTurns).toHaveLength(1);
     const step = parsed.completedTurns[0].steps[0];
     expect(step).toMatchObject({ kind: "toolCall", toolCallId: "call_1", toolName: "bash" });
     expect((step as { result?: { content: string } }).result?.content).toBe("file.txt");
-  });
-
-  it("collects multiple trailing results in order", () => {
-    const parsed = parseConversation({
-      systemPrompt: "",
-      messages: [
-        user("go"),
-        assistantToolCall("a", "read", {}),
-        assistantToolCall("b", "grep", {}),
-        toolResult("a", "read", "ra"),
-        toolResult("b", "grep", "rb"),
-      ],
-    });
-    expect(parsed.answeredToolCallIds).toEqual(["a", "b"]);
   });
 
   it("drops unanswered tool calls from history", () => {

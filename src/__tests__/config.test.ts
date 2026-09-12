@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_AGENT_URL,
-  bridgeMaxPauseMs,
   clientVersion,
   getAgentUrl,
   normalizeBaseUrl,
@@ -199,8 +198,4 @@ describe("numeric tunables", () => {
     expect(streamIdleTimeoutMs()).toBe(180_000);
   });
 
-  it("bridgeMaxPauseMs defaults to 15 minutes", () => {
-    delete process.env.PI_CURSOR_BRIDGE_PAUSE_MS;
-    expect(bridgeMaxPauseMs()).toBe(900_000);
-  });
 });
