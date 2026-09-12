@@ -20,7 +20,7 @@ import { setRouting } from "./models/registry.js";
 import type { ProcessedModel } from "./models/types.js";
 import { streamCursor } from "./protocol/stream.js";
 import { clearAllUsage, clearUsageForSession, estimatePromptTokens } from "./protocol/usage.js";
-import { closeAllSessions } from "./transport/h2.js";
+import { closeAllSessions } from "./transport/client.js";
 import { clearWorkspaceCwds, forgetSessionCwd, rememberSessionCwd } from "./workspace.js";
 
 const COMPACT_CONTEXT_STATUS = "pi-cursor-compact-context";

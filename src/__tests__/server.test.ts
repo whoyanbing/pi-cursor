@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create } from "@bufbuild/protobuf";
 import {
-  AgentClientMessageSchema,
   AgentServerMessageSchema,
   ExecServerMessageSchema,
   GetBlobArgsSchema,
@@ -25,6 +24,8 @@ import {
   ConversationTokenDetailsSchema,
   ExecServerControlMessageSchema,
   ExecServerAbortSchema,
+  type AgentClientMessage,
+  type AgentServerMessage,
   type McpToolDefinition,
 } from "../proto/agent_pb.js";
 import { BlobStore } from "../protocol/blobs.js";
@@ -32,7 +33,7 @@ import { encodeArgs } from "../protocol/request.js";
 import { handleServerMessage, type PendingToolCall, type ServerHandlers } from "../protocol/server.js";
 
 function makeHandlers(overrides: Partial<ServerHandlers> = {}) {
-  const sent: Uint8Array[] = [];
+  const sent: AgentClientMessage[] = [];
   const calls: PendingToolCall[] = [];
   const texts: string[] = [];
   const thinking: string[] = [];
@@ -59,34 +60,34 @@ function makeHandlers(overrides: Partial<ServerHandlers> = {}) {
     onLiveness: () => {
       liveness += 1;
     },
-    send: (msg) => sent.push(toBinary(AgentClientMessageSchema, msg as never)),
+    send: (msg) => sent.push(msg),
     ...overrides,
   };
 
   return { handlers, sent, calls, texts, thinking, errors, ended, usage, tokens: () => tokens, liveness: () => liveness };
 }
 
-function frame(message: Parameters<typeof create<typeof AgentServerMessageSchema>>[1]): Uint8Array {
-  return toBinary(AgentServerMessageSchema, create(AgentServerMessageSchema, message));
+function frame(message: Parameters<typeof create<typeof AgentServerMessageSchema>>[1]): AgentServerMessage {
+  return create(AgentServerMessageSchema, message);
 }
 
 // ── oneof narrowing helpers ────────────────────────────────────────────────
 
-function kvReplyOf(bytes: Uint8Array) {
-  const message = fromBinary(AgentClientMessageSchema, bytes).message;
+function kvReplyOf(client: AgentClientMessage) {
+  const message = client.message;
   if (message.case !== "kvClientMessage") throw new Error(`expected kvClientMessage, got ${message.case}`);
   const kv = message.value.message;
   if (kv.case !== "getBlobResult" && kv.case !== "setBlobResult") throw new Error(`unexpected kv case ${kv.case}`);
   return kv;
 }
 
-function execReplyOf(bytes: Uint8Array) {
-  const message = fromBinary(AgentClientMessageSchema, bytes).message;
+function execReplyOf(client: AgentClientMessage) {
+  const message = client.message;
   if (message.case !== "execClientMessage") throw new Error(`expected execClientMessage, got ${message.case}`);
   return message.value.message;
 }
 
-function update(value: unknown): Uint8Array {
+function update(value: unknown): AgentServerMessage {
   return frame({
     message: { case: "interactionUpdate", value: create(InteractionUpdateSchema, value as never) },
   });
@@ -463,13 +464,6 @@ describe("handleServerMessage", () => {
       h.handlers,
     );
     expect(h.errors.join()).toMatch(/abort/i);
-  });
-
-  it("ignores undecodable frames without throwing", () => {
-    const h = makeHandlers();
-    expect(() => handleServerMessage(new Uint8Array([0xff, 0xff, 0xff]), h.handlers)).not.toThrow();
-    expect(h.liveness()).toBe(1);
-    expect(h.errors).toHaveLength(0);
   });
 
   it("dispatches send through the injected writer", () => {

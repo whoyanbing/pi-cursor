@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { fromBinary } from "@bufbuild/protobuf";
-import { AgentClientMessageSchema } from "../proto/agent_pb.js";
-import { encodeExecResult } from "../protocol/exec-result.js";
+
+
+import { buildExecResult } from "../protocol/exec-result.js";
 import {
   boundToolResultPayload,
   boundToolResultText,
@@ -33,11 +33,10 @@ describe("boundToolResultPayload", () => {
   });
 });
 
-describe("encodeExecResult", () => {
+describe("buildExecResult", () => {
   it("truncates live MCP success text", () => {
     const huge = "y".repeat(MAX_TOOL_RESULT_TEXT_BYTES + 80);
-    const bytes = encodeExecResult(1, "exec-1", { content: huge, images: [], isError: false });
-    const message = fromBinary(AgentClientMessageSchema, bytes);
+    const message = buildExecResult(1, "exec-1", { content: huge, images: [], isError: false });
     expect(message.message.case).toBe("execClientMessage");
     if (message.message.case !== "execClientMessage") throw new Error("expected execClientMessage");
     const result = message.message.value.message;

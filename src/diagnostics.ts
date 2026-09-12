@@ -55,10 +55,10 @@ export function diagnosticsReport(tokenSource = lastCredentialSource() as string
     `lastTurnEnded=${ageMs(state.lastTurnEndedAt)}`,
     `lastRun=${state.lastRunMode ?? "none"} firstToken=${state.lastFirstTokenMs ?? "n/a"}ms bridge=${bridgeEnabled() ? "on" : "off"}`,
     `lastError=${state.lastError ?? "none"}`,
-    `transport=in-process-h2`,
+    `transport=connect-node/h2`,
     `commands=/cursor.model /cursor.usage /cursor.refresh /cursor.doctor`,
-    "hint=On stalls check lastError; handshake timeouts retry once on a fresh HTTP/2 session.",
-    "hint=Tune PI_CURSOR_CONNECT_TIMEOUT_MS (handshake) and PI_CURSOR_STREAM_IDLE_TIMEOUT_MS (silence).",
+    "hint=On stalls check lastError; a connection that dies before any response retries once.",
+    "hint=Tune PI_CURSOR_STREAM_IDLE_TIMEOUT_MS (silence watchdog, also bounds a hung handshake).",
     "hint=On auth errors re-run /login cursor.",
     "sampling=server-controlled (Cursor protocol has no temperature/top_p; pi sampling params are ignored).",
   ];

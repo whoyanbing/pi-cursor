@@ -1,11 +1,23 @@
 /**
  * Model shapes shared across discovery, processing, and the routing registry.
  */
+import type {
+  ParameterizedModel as WireModel,
+  ParameterizedVariant as WireVariant,
+} from "../proto/aiserver_pb.js";
 
 export interface CursorModelParameter {
   id: string;
   value: string;
 }
+
+/** `AvailableModels` rows without protobuf `$typeName`, so plain literals type-check. */
+export type ParameterizedVariant = Omit<WireVariant, "$typeName" | "parameters"> & {
+  parameters: CursorModelParameter[];
+};
+export type ParameterizedModel = Omit<WireModel, "$typeName" | "variants"> & {
+  variants: ParameterizedVariant[];
+};
 
 /** A raw model row exactly as Cursor advertises it (id carries effort suffixes). */
 export interface CursorModel {

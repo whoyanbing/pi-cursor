@@ -12,8 +12,7 @@
  * expired pause, dead stream) is dropped and the caller falls back to a fresh
  * rebuild request.
  */
-import type { RpcStream } from "../transport/h2.js";
-import type { FrameParser } from "../transport/connect.js";
+import type { RunStream } from "../transport/client.js";
 import type { BlobStore } from "./blobs.js";
 import type { McpToolDefinition } from "../proto/agent_pb.js";
 import { bridgeMaxPauseMs } from "../config.js";
@@ -29,8 +28,7 @@ export interface PendingExec {
 }
 
 export interface Bridge {
-  rpc: RpcStream;
-  parser: FrameParser;
+  rpc: RunStream;
   blobs: BlobStore;
   toolDefinitions: McpToolDefinition[];
   pendingExecs: Map<string, PendingExec>;

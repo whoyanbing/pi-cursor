@@ -8,15 +8,13 @@ import {
   type Bridge,
 } from "../protocol/bridge.js";
 import { BlobStore } from "../protocol/blobs.js";
-import { FrameParser } from "../transport/connect.js";
-import type { RpcStream } from "../transport/h2.js";
+import type { RunStream } from "../transport/client.js";
 
-function fakeRpc(): RpcStream {
+function fakeRpc(): RunStream {
   return {
-    write() {},
-    end() {},
+    send() {},
     destroy() {},
-    onData() {},
+    onMessage() {},
     onEnd() {},
     onError() {},
     get alive() {
@@ -28,7 +26,6 @@ function fakeRpc(): RpcStream {
 function fakeBridge(conversationId: string): Bridge {
   return {
     rpc: fakeRpc(),
-    parser: new FrameParser(),
     blobs: new BlobStore(),
     toolDefinitions: [],
     pendingExecs: new Map(),

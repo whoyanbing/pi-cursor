@@ -33,6 +33,7 @@ import {
   ToolCallSchema,
   UserMessageActionSchema,
   UserMessageSchema,
+  type AgentClientMessage,
   type McpToolDefinition,
   type McpToolResult,
   type UserMessage,
@@ -66,7 +67,9 @@ export interface BuildRequestInput {
 }
 
 export interface BuiltRequest {
-  bytes: Uint8Array;
+  message: AgentClientMessage;
+  /** Encoded size, for diagnostics. */
+  bytes: number;
   blobs: BlobStore;
 }
 
@@ -250,9 +253,6 @@ export function buildRunRequest(input: BuildRequestInput): BuiltRequest {
     mcpTools: create(McpToolsSchema, { mcpTools: input.toolDefinitions }),
   });
 
-  const bytes = toBinary(
-    AgentClientMessageSchema,
-    create(AgentClientMessageSchema, { message: { case: "runRequest" as const, value: runRequest } }),
-  );
-  return { bytes, blobs };
+  const message = create(AgentClientMessageSchema, { message: { case: "runRequest" as const, value: runRequest } });
+  return { message, bytes: toBinary(AgentClientMessageSchema, message).byteLength, blobs };
 }

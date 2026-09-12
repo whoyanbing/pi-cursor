@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
-  AgentClientMessageSchema,
+
   ConversationStateStructureSchema,
   ConversationTurnStructureSchema,
   UserMessageSchema,
@@ -33,7 +33,7 @@ describe("buildRunRequest", () => {
       conversationId: "conv-1",
     });
 
-    const client = fromBinary(AgentClientMessageSchema, built.bytes);
+    const client = built.message;
     expect(client.message.case).toBe("runRequest");
     if (client.message.case !== "runRequest") throw new Error("expected runRequest");
     const run = client.message.value;
@@ -86,7 +86,7 @@ describe("buildRunRequest", () => {
       conversationId: "conv-2",
     });
 
-    const client = fromBinary(AgentClientMessageSchema, built.bytes);
+    const client = built.message;
     if (client.message.case !== "runRequest") throw new Error("expected runRequest");
     const state = client.message.value.conversationState!;
     expect(state.turns).toHaveLength(1);
@@ -116,7 +116,7 @@ describe("buildRunRequest", () => {
       routing: { modelId: "auto" },
       conversationId: "conv-3",
     });
-    const client = fromBinary(AgentClientMessageSchema, built.bytes);
+    const client = built.message;
     if (client.message.case !== "runRequest") throw new Error("expected runRequest");
     const action = client.message.value.action?.action;
     if (action?.case !== "userMessageAction") throw new Error("expected userMessageAction");
@@ -159,7 +159,7 @@ describe("buildRunRequest", () => {
       routing: { modelId: "auto" },
       conversationId: "c",
     });
-    const client = fromBinary(AgentClientMessageSchema, built.bytes);
+    const client = built.message;
     if (client.message.case !== "runRequest") throw new Error("expected runRequest");
     const mcpTools = client.message.value.mcpTools?.mcpTools ?? [];
     expect(mcpTools).toHaveLength(1);
@@ -213,7 +213,7 @@ describe("conversation state defaults", () => {
       routing: { modelId: "auto" },
       conversationId: "c",
     });
-    const client = fromBinary(AgentClientMessageSchema, built.bytes);
+    const client = built.message;
     if (client.message.case !== "runRequest") throw new Error("expected runRequest");
     const state = client.message.value.conversationState!;
     expect(state.previousWorkspaceUris[0]).toMatch(/^file:\/\//);
@@ -233,7 +233,7 @@ describe("conversation state defaults", () => {
       conversationId: "c",
       workspaceCwd: "/tmp/pi-cursor-workspace",
     });
-    const client = fromBinary(AgentClientMessageSchema, built.bytes);
+    const client = built.message;
     if (client.message.case !== "runRequest") throw new Error("expected runRequest");
     expect(client.message.value.conversationState!.previousWorkspaceUris[0]).toBe("file:///tmp/pi-cursor-workspace");
   });

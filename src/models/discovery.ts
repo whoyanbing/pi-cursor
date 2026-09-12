@@ -1,42 +1,22 @@
 /**
- * Live model discovery over Connect unary RPCs.
+ * Live model discovery.
  *
  * `GetUsableModels` is authoritative for what the account may request;
  * `AvailableModels` adds parameterized metadata (image support, context limits,
  * per-variant request parameters/max-mode) matched onto usable rows by the
  * variant's string representation.
  */
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import {
-  GetUsableModelsRequestSchema,
-  GetUsableModelsResponseSchema,
-  type ModelDetails,
-} from "../proto/agent_pb.js";
-import { AVAILABLE_MODELS_RPC, USABLE_MODELS_RPC, getAgentUrl } from "../config.js";
-import { unaryRpc } from "../transport/h2.js";
+import type { ModelDetails } from "../proto/agent_pb.js";
+import { getAgentUrl } from "../config.js";
+import { agentClient, aiClient, callHeaders } from "../transport/client.js";
 import { clampContextWindow, inferContextWindow, inferMaxOutputTokens } from "./limits.js";
-import type { CursorModel } from "./types.js";
-import { decodeAvailableModelsResponse, encodeAvailableModelsRequest, type ParameterizedModel } from "./wire.js";
+import type { CursorModel, ParameterizedModel } from "./types.js";
 
-/** Unary bodies arrive as plain protobuf or as one Connect frame; accept both. */
-export function unwrapUnaryBody(payload: Uint8Array): Uint8Array {
-  if (payload.length < 5) return payload;
-  const flags = payload[0];
-  const length = new DataView(payload.buffer, payload.byteOffset + 1, 4).getUint32(0, false);
-  // A plausible frame: known flags, length covering the rest of the buffer.
-  if ((flags & ~0b11) === 0 && 5 + length === payload.length) {
-    return payload.subarray(5, 5 + length);
-  }
-  return payload;
-}
+const DISCOVERY_TIMEOUT_MS = 30_000;
 
-/** Decode plain protobuf first; fall back to unwrapping a Connect frame. */
-function decodeUnary<T>(payload: Uint8Array, decode: (bytes: Uint8Array) => T): T {
-  try {
-    return decode(payload);
-  } catch {
-    return decode(unwrapUnaryBody(payload));
-  }
+function callOptions(token: string, signal?: AbortSignal) {
+  const timeout = AbortSignal.timeout(DISCOVERY_TIMEOUT_MS);
+  return { headers: callHeaders(token), signal: signal ? AbortSignal.any([signal, timeout]) : timeout };
 }
 
 function normalizeUsable(models: readonly ModelDetails[]): CursorModel[] {
@@ -63,22 +43,16 @@ function normalizeUsable(models: readonly ModelDetails[]): CursorModel[] {
 }
 
 export async function fetchUsableModels(token: string, signal?: AbortSignal): Promise<CursorModel[]> {
-  const body = toBinary(GetUsableModelsRequestSchema, create(GetUsableModelsRequestSchema, {}));
-  const response = await unaryRpc(getAgentUrl(), { rpcPath: USABLE_MODELS_RPC, token, body, signal });
-  const payload = new Uint8Array(response);
-  const decoded = decodeUnary(payload, (bytes) => fromBinary(GetUsableModelsResponseSchema, bytes));
-  return normalizeUsable(decoded.models ?? []);
+  const response = await agentClient(getAgentUrl()).getUsableModels({}, callOptions(token, signal));
+  return normalizeUsable(response.models ?? []);
 }
 
 export async function fetchParameterizedModels(token: string, signal?: AbortSignal): Promise<ParameterizedModel[]> {
-  const response = await unaryRpc(getAgentUrl(), {
-    rpcPath: AVAILABLE_MODELS_RPC,
-    token,
-    body: encodeAvailableModelsRequest(),
-    signal,
-  });
-  const payload = new Uint8Array(response);
-  return decodeUnary(payload, (bytes) => decodeAvailableModelsResponse(bytes));
+  const response = await aiClient(getAgentUrl()).availableModels(
+    { useModelParameters: true, doNotUseMarkdown: true },
+    callOptions(token, signal),
+  );
+  return response.models.filter((model) => model.name);
 }
 
 /**

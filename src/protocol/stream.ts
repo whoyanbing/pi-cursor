@@ -29,15 +29,15 @@ import type {
   ToolCall,
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create } from "@bufbuild/protobuf";
 import {
   AgentClientMessageSchema,
   ClientHeartbeatSchema,
+  type AgentClientMessage,
   type McpToolDefinition,
 } from "../proto/agent_pb.js";
-import { CONTINUE_TEXT, RUN_RPC, bridgeEnabled, getAgentUrl, heartbeatIntervalMs, streamIdleTimeoutMs } from "../config.js";
-import { encodeFrame, FrameParser, parseErrorPayload } from "../transport/connect.js";
-import { openStream } from "../transport/h2.js";
+import { CONTINUE_TEXT, bridgeEnabled, getAgentUrl, heartbeatIntervalMs, streamIdleTimeoutMs } from "../config.js";
+import { openRun } from "../transport/client.js";
 import { resolveAccessToken } from "../auth/credentials.js";
 import { resolveRouteTarget } from "../models/registry.js";
 import { recordRun } from "../diagnostics.js";
@@ -54,7 +54,7 @@ import {
 } from "./bridge.js";
 import { parseConversation, type ImagePart, type ParsedConversation, type ToolResultPayload } from "./context.js";
 import { buildConversationId } from "./conversation-id.js";
-import { encodeExecResult } from "./exec-result.js";
+import { buildExecResult } from "./exec-result.js";
 import { buildRunRequest, type ModelRouting } from "./request.js";
 import { handleServerMessage, type ServerHandlers } from "./server.js";
 import { ThinkingTagParser } from "./thinking.js";
@@ -314,15 +314,12 @@ function markFirstOutput(state: RunState): void {
   state.startedAt = 0;
 }
 
-function heartbeatFrame(): Uint8Array {
-  return encodeFrame(
-    toBinary(
-      AgentClientMessageSchema,
-      create(AgentClientMessageSchema, {
-        message: { case: "clientHeartbeat", value: create(ClientHeartbeatSchema, {}) },
-      }),
-    ),
-  );
+const RUN_RPC = "agent.v1.AgentService/Run";
+
+function heartbeatMessage(): AgentClientMessage {
+  return create(AgentClientMessageSchema, {
+    message: { case: "clientHeartbeat", value: create(ClientHeartbeatSchema, {}) },
+  });
 }
 
 function startHeartbeat(bridge: Bridge): void {
@@ -335,7 +332,7 @@ function startHeartbeat(bridge: Bridge): void {
       return;
     }
     try {
-      bridge.rpc.write(heartbeatFrame());
+      bridge.rpc.send(heartbeatMessage());
     } catch {
       // A failed heartbeat is surfaced by the transport error path.
     }
@@ -441,44 +438,22 @@ function dropBridge(state: RunState): void {
 }
 /**
  * Wire transport + protocol handlers to the current run state.
- * RpcStream.onData / onEnd / onError assign (they do not stack); calling this
- * again on resume replaces the previous handlers rather than duplicating them.
+ * RunStream.onMessage / onEnd / onError assign (they do not stack); calling
+ * this again on resume replaces the previous handlers rather than duplicating.
  */
 function attachTransport(state: RunState): void {
   const bridge = state.bridge!;
   const handlers = makeHandlers(state);
 
-  bridge.rpc.onData((chunk) => {
-    let frames;
+  bridge.rpc.onMessage((message) => {
     try {
-      frames = bridge.parser.push(chunk);
+      handleServerMessage(message, handlers);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      failParkedBridge(state, message);
-      return;
-    }
-    for (const frame of frames) {
-      if (frame.endStream) {
-        const err = parseErrorPayload(frame.payload);
-        failParkedBridge(state, err.message || err.code || "Cursor ended the stream with an error");
-        return;
-      }
-      try {
-        handleServerMessage(frame.payload, handlers);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        failParkedBridge(state, `Cursor stream handling failed: ${message}`);
-        return;
-      }
+      failParkedBridge(state, `Cursor stream handling failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   });
 
-  bridge.rpc.onEnd((info) => {
-    if (!info.ok) {
-      const detail = info.statusText || info.errorBody || "request failed";
-      failParkedBridge(state, `Cursor RPC failed: HTTP ${info.status} ${detail}`);
-      return;
-    }
+  bridge.rpc.onEnd(() => {
     // Clean end without turnEnded: if a writer is live, close it out. A parked
     // bridge whose stream ended cannot be resumed — keep the error so the next
     // call surfaces it instead of silently rebuilding.
@@ -551,7 +526,7 @@ function makeHandlers(state: RunState): ServerHandlers {
     },
     send(clientMessage) {
       markWork();
-      bridge.rpc.write(encodeFrame(toBinary(AgentClientMessageSchema, clientMessage as never)));
+      bridge.rpc.send(clientMessage);
     },
   };
 }
@@ -711,10 +686,9 @@ function startFresh(
     workspaceCwd: resolveWorkspaceCwd(sessionId),
   });
 
-  const rpc = openStream(baseUrl, { rpcPath: RUN_RPC, token });
+  const rpc = openRun(baseUrl, token);
   const bridge: Bridge = {
     rpc,
-    parser: new FrameParser(),
     blobs: built.blobs,
     toolDefinitions,
     pendingExecs: new Map(),
@@ -726,7 +700,7 @@ function startFresh(
   };
   state.bridge = bridge;
   storeBridge(conversationId, bridge);
-  recordRun({ lastEndpoint: baseUrl, lastRpcPath: RUN_RPC, lastRequestBytes: built.bytes.byteLength });
+  recordRun({ lastEndpoint: baseUrl, lastRpcPath: RUN_RPC, lastRequestBytes: built.bytes });
 
   attachTransport(state);
   armWatchdog(state, () => {
@@ -735,7 +709,7 @@ function startFresh(
   });
   startHeartbeat(bridge);
 
-  rpc.write(encodeFrame(built.bytes));
+  rpc.send(built.message);
 }
 
 function resumeBridge(state: RunState, parsed: ParsedConversation): void {
@@ -748,7 +722,7 @@ function resumeBridge(state: RunState, parsed: ParsedConversation): void {
     const exec = bridge.pendingExecs.get(toolCallId);
     if (!exec) continue;
     const payload = results.get(toolCallId) ?? { content: "", images: [], isError: false };
-    bridge.rpc.write(encodeFrame(encodeExecResult(exec.execMsgId, exec.execId, payload)));
+    bridge.rpc.send(buildExecResult(exec.execMsgId, exec.execId, payload));
     bridge.pendingExecs.delete(toolCallId);
   }
 

@@ -3196,7 +3196,7 @@ enum BugbotDeeplinkEventKind {
 }
 
 service AgentService {
-  rpc Run(AgentClientMessage) returns (AgentServerMessage);
+  rpc Run(stream AgentClientMessage) returns (stream AgentServerMessage);
   rpc RunSSE(BidiRequestId) returns (AgentServerMessage);
   rpc NameAgent(NameAgentRequest) returns (NameAgentResponse);
   rpc GetUsableModels(GetUsableModelsRequest) returns (GetUsableModelsResponse);

@@ -15,7 +15,7 @@ pi (streamSimple)
     ↓
 src/protocol/stream.ts   — turn orchestration, tool-call bridging
     ↓
-src/transport/h2.ts      — persistent in-process node:http2 session
+src/transport/client.ts  — @connectrpc/connect-node client, one pooled HTTP/2 session per host
     ↓
 https://agentn.us.api5.cursor.sh  /agent.v1.AgentService/Run
 ```
@@ -113,7 +113,6 @@ time. Results cache to `~/.pi/agent/cursor-models-cache.json` (6h TTL).
 | `PI_CURSOR_CLIENT_VERSION` | probed from `cursor-agent --version` (fallback `cli-2026.08.25-3e8eec8`) | `x-cursor-client-version` header |
 | `PI_CURSOR_SYSTEM_CREDENTIALS` | allowed | Set `0` to skip Keychain/IDE credential reuse. First use otherwise notifies once. |
 | `PI_CURSOR_STREAM_IDLE_TIMEOUT_MS` | `180000` | Silence watchdog; `0` disables |
-| `PI_CURSOR_CONNECT_TIMEOUT_MS` | `30000` | HTTP/2 handshake timeout; `0` disables. Timed-out runs retry once on a fresh session |
 | `PI_CURSOR_BRIDGE_PAUSE_MS` | `900000` | Max time a parked bridge waits for tool results |
 | `PI_CURSOR_BRIDGE` | `1` | Set `0` to drop the Run stream at each tool call and rebuild on the next turn (A/B via `lastRun`/`firstToken` in `/cursor.doctor`) |
 | `PI_CURSOR_HEARTBEAT_MS` | `15000` | Client heartbeat cadence on the Run stream |
@@ -122,7 +121,7 @@ time. Results cache to `~/.pi/agent/cursor-models-cache.json` (6h TTL).
 
 ```bash
 npm run check    # tsc --noEmit
-npm test         # vitest (offline: fake transports + fixtures, plus a local h2 pool test)
+npm test         # vitest (offline: fake transports + fixtures, plus a local Connect server round-trip)
 npm run proto:gen  # regenerate src/proto/agent_pb.ts from proto/agent.proto (buf)
 ```
 

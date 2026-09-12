@@ -7,10 +7,9 @@
  * interaction question. Each case either produces output for Pi or writes an
  * answer frame back on the same stream.
  */
-import { create, fromBinary, toBinary, type DescMessage } from "@bufbuild/protobuf";
+import { create, type DescMessage } from "@bufbuild/protobuf";
 import {
   AgentClientMessageSchema,
-  AgentServerMessageSchema,
   AskQuestionErrorSchema,
   AskQuestionInteractionResponseSchema,
   AskQuestionResultSchema,
@@ -57,9 +56,10 @@ import {
   WriteResultSchema,
   WriteShellStdinErrorSchema,
   WriteShellStdinResultSchema,
+  type AgentClientMessage,
+  type AgentServerMessage,
   type McpToolDefinition,
 } from "../proto/agent_pb.js";
-import { recordRun } from "../diagnostics.js";
 import { decodeArgs } from "./request.js";
 import type { BlobStore } from "./blobs.js";
 import { piToolName } from "./prompt.js";
@@ -85,16 +85,12 @@ export interface ServerHandlers {
   onError(message: string): void;
   /** Heartbeats and other liveness-only frames. */
   onLiveness(): void;
-  /** Write an answer frame back on the Run stream. */
-  send(message: ReturnType<typeof createClientMessage>): void;
+  /** Write an answer back on the Run stream. */
+  send(message: AgentClientMessage): void;
 }
 
-function createClientMessage(message: Parameters<typeof create<typeof AgentClientMessageSchema>>[1]) {
+function createClientMessage(message: Parameters<typeof create<typeof AgentClientMessageSchema>>[1]): AgentClientMessage {
   return create(AgentClientMessageSchema, message);
-}
-
-export function encodeClientMessage(message: unknown): Uint8Array {
-  return toBinary(AgentClientMessageSchema, message as never);
 }
 
 function toHex(bytes: Uint8Array): string {
@@ -350,17 +346,8 @@ function handleInteractionQuery(h: ServerHandlers, query: { id: number; query: {
   h.onError(`Pi's Cursor provider does not support the ${query.query.case} interaction query.`);
 }
 
-/** Decode and dispatch one server frame. Undecodable frames are ignored. */
-export function handleServerMessage(frame: Uint8Array, h: ServerHandlers): void {
-  let server: ReturnType<typeof fromBinary<typeof AgentServerMessageSchema>>;
-  try {
-    server = fromBinary(AgentServerMessageSchema, frame);
-  } catch {
-    // Wire drift or a truncated frame; skip it rather than killing the turn.
-    recordRun({ lastError: "undecodable AgentServerMessage frame" });
-    h.onLiveness();
-    return;
-  }
+/** Dispatch one decoded server message. */
+export function handleServerMessage(server: AgentServerMessage, h: ServerHandlers): void {
   const message = server.message;
   if (!message) return;
 

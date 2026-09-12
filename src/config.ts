@@ -18,9 +18,6 @@ export const DEFAULT_AGENT_URL = "https://agentn.us.api5.cursor.sh";
 export const AUX_URL = "https://api2.cursor.sh";
 export const DEFAULT_CLIENT_VERSION = "cli-2026.08.25-3e8eec8";
 
-export const RUN_RPC = "/agent.v1.AgentService/Run";
-export const USABLE_MODELS_RPC = "/agent.v1.AgentService/GetUsableModels";
-export const AVAILABLE_MODELS_RPC = "/aiserver.v1.AiService/AvailableModels";
 export const USAGE_URL = `${AUX_URL}/aiserver.v1.DashboardService/GetCurrentPeriodUsage`;
 
 export const LOGIN_URL = "https://cursor.com/loginDeepControl";
@@ -32,11 +29,6 @@ export const MODEL_CACHE_FILE = "cursor-models-cache.json";
 export const MODEL_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 
 export const ZERO_COST = Object.freeze({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-
-/** Connect streaming frame flag marking the final (possibly error) frame. */
-export const CONNECT_END_STREAM_FLAG = 0b0000_0010;
-export const MAX_FRAME_BYTES = 64 * 1024 * 1024;
-export const MAX_ERROR_BODY_BYTES = 1024 * 1024;
 
 /** Synthetic user message used to continue a turn after tool results. */
 export const CONTINUE_TEXT = "Continue.";
@@ -75,12 +67,6 @@ export function heartbeatIntervalMs(): number {
 
 export const HEARTBEAT_INTERVAL_MS = 15_000;
 export const H2_PING_INTERVAL_MS = 20_000;
-export const CONNECT_TIMEOUT_MS = 30_000;
-
-/** HTTP/2 handshake timeout; 0 disables. Does not cover first-token wait. */
-export function connectTimeoutMs(): number {
-  return envInt("PI_CURSOR_CONNECT_TIMEOUT_MS", CONNECT_TIMEOUT_MS);
-}
 
 export function clientVersion(): string {
   return process.env.PI_CURSOR_CLIENT_VERSION?.trim() || detectedClientVersion();

@@ -1,9 +1,10 @@
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create } from "@bufbuild/protobuf";
 import {
   AgentClientMessageSchema,
   ExecClientMessageSchema,
   McpErrorSchema,
   McpResultSchema,
+  type AgentClientMessage,
 } from "../proto/agent_pb.js";
 import type { ToolResultPayload } from "./context.js";
 import { boundToolResultText, mcpSuccess } from "./tool-result.js";
@@ -18,18 +19,15 @@ export function buildMcpResult(payload: ToolResultPayload) {
   return create(McpResultSchema, { result: { case: "success", value: mcpSuccess(payload) } });
 }
 
-export function encodeExecResult(execMsgId: number, execId: string, payload: ToolResultPayload): Uint8Array {
-  return toBinary(
-    AgentClientMessageSchema,
-    create(AgentClientMessageSchema, {
-      message: {
-        case: "execClientMessage",
-        value: create(ExecClientMessageSchema, {
-          id: execMsgId,
-          execId,
-          message: { case: "mcpResult", value: buildMcpResult(payload) },
-        }),
-      },
-    }),
-  );
+export function buildExecResult(execMsgId: number, execId: string, payload: ToolResultPayload): AgentClientMessage {
+  return create(AgentClientMessageSchema, {
+    message: {
+      case: "execClientMessage",
+      value: create(ExecClientMessageSchema, {
+        id: execMsgId,
+        execId,
+        message: { case: "mcpResult", value: buildMcpResult(payload) },
+      }),
+    },
+  });
 }

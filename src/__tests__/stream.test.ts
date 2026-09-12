@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create } from "@bufbuild/protobuf";
 import type { Api, AssistantMessage, AssistantMessageEvent, Context, Model, Tool } from "@earendil-works/pi-ai";
 import {
-  AgentClientMessageSchema,
   AgentServerMessageSchema,
   ExecServerMessageSchema,
   InteractionUpdateSchema,
@@ -16,9 +15,10 @@ import {
   ThinkingDeltaUpdateSchema,
   TokenDeltaUpdateSchema,
   TurnEndedUpdateSchema,
+  type AgentClientMessage,
+  type AgentServerMessage,
 } from "../proto/agent_pb.js";
-import { encodeFrame } from "../transport/connect.js";
-import type { RpcStream, StreamEndInfo } from "../transport/h2.js";
+import type { RunStream } from "../transport/client.js";
 import { clearAllBridges, peekBridge } from "../protocol/bridge.js";
 import { encodeArgs } from "../protocol/request.js";
 import { streamCursor } from "../protocol/stream.js";
@@ -30,42 +30,37 @@ import { parseConversation } from "../protocol/context.js";
 
 const transport = vi.hoisted(() => ({
   streams: [] as FakeStream[],
-  nextEnd: null as StreamEndInfo | null,
   failOpen: null as Error | null,
 }));
 
-class FakeStream implements RpcStream {
-  readonly written: Buffer[] = [];
+class FakeStream implements RunStream {
+  readonly written: AgentClientMessage[] = [];
   destroyed = false;
   ended = false;
-  private dataCb: ((chunk: Buffer) => void) | null = null;
-  private endCb: ((info: StreamEndInfo) => void) | null = null;
+  private messageCb: ((message: AgentServerMessage) => void) | null = null;
+  private endCb: (() => void) | null = null;
   private errorCb: ((error: Error) => void) | null = null;
 
-  constructor(readonly options: { rpcPath: string; token: string }) {}
+  constructor(readonly options: { baseUrl: string; token: string }) {}
 
   get alive(): boolean {
     return !this.destroyed && !this.ended;
   }
 
-  write(frame: Uint8Array): void {
+  send(message: AgentClientMessage): void {
     if (!this.alive) return;
-    this.written.push(Buffer.from(frame));
-  }
-
-  end(): void {
-    this.ended = true;
+    this.written.push(message);
   }
 
   destroy(): void {
     this.destroyed = true;
   }
 
-  onData(cb: (chunk: Buffer) => void): void {
-    this.dataCb = cb;
+  onMessage(cb: (message: AgentServerMessage) => void): void {
+    this.messageCb = cb;
   }
 
-  onEnd(cb: (info: StreamEndInfo) => void): void {
+  onEnd(cb: () => void): void {
     this.endCb = cb;
   }
 
@@ -74,12 +69,8 @@ class FakeStream implements RpcStream {
   }
 
   // Test drivers
-  emit(frame: Uint8Array): void {
-    this.dataCb?.(Buffer.from(frame));
-  }
-
   serverFrame(message: Parameters<typeof create<typeof AgentServerMessageSchema>>[1]): void {
-    this.emit(encodeFrame(toBinary(AgentServerMessageSchema, create(AgentServerMessageSchema, message))));
+    this.messageCb?.(create(AgentServerMessageSchema, message));
   }
 
   text(delta: string): void {
@@ -161,19 +152,21 @@ class FakeStream implements RpcStream {
     });
   }
 
+  /** Connect surfaces an end-of-stream error frame as a thrown ConnectError. */
   endStreamError(code: string, message: string): void {
-    this.emit(encodeFrame(Buffer.from(JSON.stringify({ error: { code, message } }), "utf8"), true));
+    this.ended = true;
+    this.errorCb?.(new Error(`[${code}] ${message}`));
   }
 
   completeOk(): void {
     this.ended = true;
-    this.endCb?.({ ok: true, status: 200 });
+    this.endCb?.();
   }
 
+  /** A non-2xx response becomes a ConnectError carrying the HTTP status. */
   completeError(status: number, errorBody?: string): void {
     this.ended = true;
-    this.endCb?.(transport.nextEnd ?? { ok: false, status, errorBody });
-    transport.nextEnd = null;
+    this.errorCb?.(new Error(`[unknown] HTTP ${status}: ${errorBody ?? ""}`));
   }
 
   transportError(message: string): void {
@@ -181,9 +174,9 @@ class FakeStream implements RpcStream {
     this.errorCb?.(new Error(message));
   }
 
-  /** Client messages written so far, decoded. */
+  /** Client messages written so far. */
   clientMessages() {
-    return this.written.map((frame) => fromBinary(AgentClientMessageSchema, frame.subarray(5)));
+    return this.written;
   }
 }
 
@@ -215,16 +208,14 @@ function actionTextOf(run: AgentRunRequest): string {
   return action.value.userMessage?.text ?? "";
 }
 
-vi.mock("../transport/h2.js", () => ({
-  openStream: (_baseUrl: string, options: { rpcPath: string; token: string }) => {
+vi.mock("../transport/client.js", () => ({
+  openRun: (baseUrl: string, token: string) => {
     if (transport.failOpen) throw transport.failOpen;
-    const stream = new FakeStream(options);
+    const stream = new FakeStream({ baseUrl, token });
     transport.streams.push(stream);
     return stream;
   },
-  unaryRpc: vi.fn(),
   closeAllSessions: vi.fn(),
-  describeTransportError: (_e: unknown, baseUrl: string) => `transport error on ${baseUrl}`,
 }));
 
 vi.mock("../auth/credentials.js", () => ({
@@ -320,7 +311,6 @@ function conversationIdFor(messages: Context["messages"], modelId = "gpt-5"): st
 
 beforeEach(() => {
   transport.streams = [];
-  transport.nextEnd = null;
   transport.failOpen = null;
   clearAllBridges();
   clearAllUsage();
@@ -369,7 +359,7 @@ describe("streamCursor", () => {
   it("streams text deltas and finishes on turnEnded", async () => {
     const eventsPromise = collect(streamCursor(makeModel(), makeContext([user("hi")]), { apiKey: "t", sessionId }));
     const stream = lastStream();
-    expect(stream.options.rpcPath).toBe("/agent.v1.AgentService/Run");
+    expect(stream.options.token).toBe("t");
 
     stream.text("Hello ");
     stream.text("world");
