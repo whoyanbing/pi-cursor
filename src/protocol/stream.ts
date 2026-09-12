@@ -581,10 +581,9 @@ export function streamCursor(
       const conversationId = buildConversationId(parsed, model.id, options?.sessionId);
       const priorInput = contextInputTokens(context, model);
       if (priorInput > 0) stabilizeInputTokens(conversationId, priorInput);
-      const initialInput = Math.max(
-        cachedInputTokens(conversationId),
-        estimatePromptTokens(model, context, parsed),
-      );
+      // A real checkpoint from the previous sub-turn beats a character-count
+      // estimate, and skipping the estimate avoids re-serializing the history.
+      const initialInput = cachedInputTokens(conversationId) || estimatePromptTokens(model, context, parsed);
       writer.seedInputTokens(initialInput);
       const token = options?.apiKey?.trim() || (await resolveAccessToken(options?.signal));
       if (writer.closed) return;

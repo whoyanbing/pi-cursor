@@ -26,6 +26,7 @@ import {
   McpToolsSchema,
   RequestedModelSchema,
   RequestedModel_ModelParameterbytesSchema,
+  SelectedContextBlobSchema,
   SelectedContextSchema,
   SelectedImageSchema,
   ThinkingMessageSchema,
@@ -69,37 +70,11 @@ export interface BuiltRequest {
   blobs: BlobStore;
 }
 
-function encodeVarint(value: number): number[] {
-  const out: number[] = [];
-  let v = value >>> 0;
-  while (v >= 0x80) {
-    out.push((v & 0x7f) | 0x80);
-    v >>>= 7;
-  }
-  out.push(v);
-  return out;
-}
-
-/**
- * `SelectedContextBlob` has no generated schema; emit the raw wire format for
- * the two fields Cursor reads: field 1 (repeated bytes) root-prompt blob refs
- * and field 22 (string) client name.
- */
 export function buildSelectedContextBlob(rootPromptBlobIds: readonly Uint8Array[], clientName: string): Uint8Array {
-  const parts: Uint8Array[] = [];
-  for (const blobId of rootPromptBlobIds) {
-    parts.push(new Uint8Array([0x0a, ...encodeVarint(blobId.length), ...blobId]));
-  }
-  const nameBytes = new TextEncoder().encode(clientName);
-  parts.push(new Uint8Array([0xb2, 0x01, ...encodeVarint(nameBytes.length), ...nameBytes]));
-  const total = parts.reduce((sum, part) => sum + part.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
+  return toBinary(
+    SelectedContextBlobSchema,
+    create(SelectedContextBlobSchema, { rootPromptBlobIds: [...rootPromptBlobIds], clientName }),
+  );
 }
 
 /** MCP arg values travel as protobuf `Value` bytes; fall back to UTF-8 text. */

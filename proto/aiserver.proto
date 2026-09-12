@@ -1,0 +1,41 @@
+// Subset of Cursor's aiserver.v1.AiService/AvailableModels wire schema.
+// Only the fields pi-cursor reads are declared; unknown fields are skipped by
+// the protobuf runtime. Field numbers observed from the live response.
+syntax = "proto3";
+
+package aiserver.v1;
+
+message AvailableModelsRequest {
+  bool use_model_parameters = 5;
+  bool do_not_use_markdown = 7;
+}
+
+message AvailableModelsResponse {
+  repeated ParameterizedModel models = 2;
+}
+
+message ModelParameter {
+  string id = 1;
+  string value = 2;
+}
+
+message ParameterizedVariant {
+  repeated ModelParameter parameters = 1;
+  optional string display_name = 2;
+  bool is_max_mode = 3;
+  optional bool is_default_max_config = 4;
+  optional bool is_default_non_max_config = 5;
+  optional string variant_string_representation = 9;
+}
+
+message ParameterizedModel {
+  string name = 1;
+  optional bool supports_images = 10;
+  optional bool supports_max_mode = 14;
+  optional uint32 context_token_limit = 15;
+  optional uint32 context_token_limit_for_max_mode = 16;
+  optional string client_display_name = 17;
+  optional string server_model_name = 18;
+  optional bool supports_non_max_mode = 19;
+  repeated ParameterizedVariant variants = 30;
+}

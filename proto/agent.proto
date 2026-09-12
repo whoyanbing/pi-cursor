@@ -2360,6 +2360,13 @@ message SelectedSubagent {
   string name = 1;
 }
 
+// Payload of UserMessage.selected_context_blob. Only the two fields Cursor
+// reads from a CLI client are declared.
+message SelectedContextBlob {
+  repeated bytes root_prompt_blob_ids = 1;
+  string client_name = 22;
+}
+
 message SelectedContext {
   repeated SelectedImage selected_images = 1;
   optional InvocationContext invocation_context = 2;
