@@ -53,7 +53,7 @@ export function diagnosticsReport(tokenSource = lastCredentialSource() as string
     `lastEndpoint=${state.lastEndpoint ?? "none"}`,
     `lastRequestBytes=${state.lastRequestBytes ?? "none"}`,
     `lastTurnEnded=${ageMs(state.lastTurnEndedAt)}`,
-    `lastRun=${state.lastRunMode ?? "none"} firstToken=${state.lastFirstTokenMs ?? "n/a"}ms bridge=${bridgeEnabled() ? "on" : "off"}`,
+    `lastRun=${state.lastRunMode ?? "none"} firstToken=${state.lastFirstTokenMs === undefined ? "n/a" : `${state.lastFirstTokenMs}ms`} bridge=${bridgeEnabled() ? "on" : "off"}`,
     `lastError=${state.lastError ?? "none"}`,
     `transport=connect-node/h2`,
     `commands=/cursor.model /cursor.usage /cursor.refresh /cursor.doctor`,
