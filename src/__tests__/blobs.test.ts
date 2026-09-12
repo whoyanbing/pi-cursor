@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BlobStore, MAX_BLOB_BYTES, MAX_STORE_ENTRIES } from "../protocol/blobs.js";
+import { BlobStore, MAX_BLOB_BYTES } from "../protocol/blobs.js";
 
 describe("BlobStore", () => {
   it("addresses content by sha256", () => {
@@ -53,21 +53,17 @@ describe("BlobStore", () => {
     expect(store.has(id)).toBe(false);
   });
 
-  it("never evicts client-put blobs when the store overflows", () => {
-    const store = new BlobStore();
+  it("declines server blobs that would overflow, keeping client-put blobs intact", () => {
+    const store = new BlobStore({ maxStoreBytes: 10 });
     const keep = store.put(new TextEncoder().encode("keep-me"));
-    for (let i = 0; i < MAX_STORE_ENTRIES + 1; i += 1) {
-      const id = new Uint8Array(32);
-      new DataView(id.buffer).setUint32(0, i);
-      store.setFromServer(id, new Uint8Array([i & 0xff]));
-    }
-    expect(store.has(keep)).toBe(true);
+    const id = new Uint8Array(32).fill(3);
+    expect(store.setFromServer(id, new Uint8Array(4))).toBe(false);
+    expect(store.has(id)).toBe(false);
     expect(store.getByIdBytes(keep)).toEqual(new TextEncoder().encode("keep-me"));
-    expect(store.entries).toBeLessThanOrEqual(MAX_STORE_ENTRIES);
   });
 
-  it("throws instead of evicting client-put blobs when the store overflows", () => {
-    const store = new BlobStore({ maxStoreBytes: 100, maxStoreEntries: 4 });
+  it("throws instead of returning a dangling id when the store overflows", () => {
+    const store = new BlobStore({ maxStoreBytes: 15 });
     store.put(new TextEncoder().encode("one"));
     store.put(new TextEncoder().encode("two"));
     store.put(new TextEncoder().encode("three"));

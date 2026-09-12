@@ -7,7 +7,7 @@
  * interaction question. Each case either produces output for Pi or writes an
  * answer frame back on the same stream.
  */
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary, type DescMessage } from "@bufbuild/protobuf";
 import {
   AgentClientMessageSchema,
   AgentServerMessageSchema,
@@ -159,158 +159,81 @@ function toolNames(h: ServerHandlers): Set<string> {
   return new Set(h.toolDefinitions.map((tool) => tool.toolName));
 }
 
-/** Reject a Cursor-native tool exec, pointing the model at the Pi equivalent. */
-function rejectNativeTool(
-  h: ServerHandlers,
-  execMsgId: number,
-  execId: string,
-  execCase: string,
-  args: Record<string, unknown>,
-): void {
-  const reason = nativeToolRejection(execCase, toolNames(h));
-  const path = String(args.path ?? "");
-  const command = String(args.command ?? "");
-  const workingDirectory = String(args.workingDirectory ?? "");
-  const url = String(args.url ?? "");
-  const uri = String(args.uri ?? "");
+type Args = Record<string, unknown>;
+const str = (value: unknown): string => String(value ?? "");
+const pathReason = (a: Args, reason: string) => ({ path: str(a.path), reason });
+const shellReason = (a: Args, reason: string) => ({
+  command: str(a.command),
+  workingDirectory: str(a.workingDirectory),
+  reason,
+  isReadonly: false,
+});
 
-  switch (execCase) {
-    case "readArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "readResult",
-        value: create(ReadResultSchema, {
-          result: { case: "rejected", value: create(ReadRejectedSchema, { path, reason }) },
-        }),
-      });
-    case "lsArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "lsResult",
-        value: create(LsResultSchema, {
-          result: { case: "rejected", value: create(LsRejectedSchema, { path, reason }) },
-        }),
-      });
-    case "grepArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "grepResult",
-        value: create(GrepResultSchema, { result: { case: "error", value: create(GrepErrorSchema, { error: reason }) } }),
-      });
-    case "writeArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "writeResult",
-        value: create(WriteResultSchema, {
-          result: { case: "rejected", value: create(WriteRejectedSchema, { path, reason }) },
-        }),
-      });
-    case "deleteArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "deleteResult",
-        value: create(DeleteResultSchema, {
-          result: { case: "rejected", value: create(DeleteRejectedSchema, { path, reason }) },
-        }),
-      });
-    case "shellArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "shellResult",
-        value: create(ShellResultSchema, {
-          result: {
-            case: "rejected",
-            value: create(ShellRejectedSchema, { command, workingDirectory, reason, isReadonly: false }),
-          },
-        }),
-      });
-    case "shellStreamArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "shellStream",
-        value: create(ShellStreamSchema, {
-          event: {
-            case: "rejected",
-            value: create(ShellRejectedSchema, { command, workingDirectory, reason, isReadonly: false }),
-          },
-        }),
-      });
-    case "backgroundShellSpawnArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "backgroundShellSpawnResult",
-        value: create(BackgroundShellSpawnResultSchema, {
-          result: {
-            case: "error",
-            value: create(BackgroundShellSpawnErrorSchema, { command, workingDirectory, error: reason }),
-          },
-        }),
-      });
-    case "writeShellStdinArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "writeShellStdinResult",
-        value: create(WriteShellStdinResultSchema, {
-          result: { case: "error", value: create(WriteShellStdinErrorSchema, { error: reason }) },
-        }),
-      });
-    case "fetchArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "fetchResult",
-        value: create(FetchResultSchema, { result: { case: "error", value: create(FetchErrorSchema, { url, error: reason }) } }),
-      });
-    case "diagnosticsArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "diagnosticsResult",
-        value: create(DiagnosticsResultSchema, {
-          result: { case: "rejected", value: create(DiagnosticsRejectedSchema, { path, reason }) },
-        }),
-      });
-    case "recordScreenArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "recordScreenResult",
-        value: create(RecordScreenResultSchema, {
-          result: { case: "failure", value: create(RecordScreenFailureSchema, { error: reason }) },
-        }),
-      });
-    case "computerUseArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "computerUseResult",
-        value: create(ComputerUseResultSchema, {
-          result: {
-            case: "error",
-            value: create(ComputerUseErrorSchema, {
-              error: reason,
-              actionCount: Array.isArray(args.actions) ? args.actions.length : 0,
-              durationMs: 0,
-            }),
-          },
-        }),
-      });
-    case "listMcpResourcesExecArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "listMcpResourcesExecResult",
-        value: create(ListMcpResourcesExecResultSchema, {
-          result: { case: "rejected", value: create(ListMcpResourcesRejectedSchema, { reason }) },
-        }),
-      });
-    case "readMcpResourceExecArgs":
-      return answerExec(h, execMsgId, execId, {
-        case: "readMcpResourceExecResult",
-        value: create(ReadMcpResourceExecResultSchema, {
-          result: { case: "rejected", value: create(ReadMcpResourceRejectedSchema, { uri, reason }) },
-        }),
-      });
-    default:
-      // Unknown exec case: throw so the server surfaces it instead of hanging.
-      return h.send(
-        createClientMessage({
-          message: {
-            case: "execClientControlMessage",
-            value: create(ExecClientControlMessageSchema, {
-              message: {
-                case: "throw",
-                value: create(ExecClientThrowSchema, {
-                  id: execMsgId,
-                  error: `pi-cursor has no handler for Cursor exec case "${execCase}" (wire drift: agent.proto may be behind Cursor).`,
-                }),
-              },
-            }),
-          },
-        }),
-      );
+/**
+ * How to reject each Cursor-native exec: which `ExecClientMessage` case to
+ * answer with, its result schema, the oneof to fill (`result` unless noted),
+ * the rejection case inside it, and the rejection message + fields.
+ */
+interface RejectSpec {
+  result: string;
+  schema: DescMessage;
+  oneof?: string;
+  reject: string;
+  inner: DescMessage;
+  fields: (args: Args, reason: string) => Record<string, unknown>;
+}
+
+const NATIVE_REJECTS: Record<string, RejectSpec> = {
+  readArgs: { result: "readResult", schema: ReadResultSchema, reject: "rejected", inner: ReadRejectedSchema, fields: pathReason },
+  lsArgs: { result: "lsResult", schema: LsResultSchema, reject: "rejected", inner: LsRejectedSchema, fields: pathReason },
+  writeArgs: { result: "writeResult", schema: WriteResultSchema, reject: "rejected", inner: WriteRejectedSchema, fields: pathReason },
+  deleteArgs: { result: "deleteResult", schema: DeleteResultSchema, reject: "rejected", inner: DeleteRejectedSchema, fields: pathReason },
+  diagnosticsArgs: { result: "diagnosticsResult", schema: DiagnosticsResultSchema, reject: "rejected", inner: DiagnosticsRejectedSchema, fields: pathReason },
+  grepArgs: { result: "grepResult", schema: GrepResultSchema, reject: "error", inner: GrepErrorSchema, fields: (_a, error) => ({ error }) },
+  shellArgs: { result: "shellResult", schema: ShellResultSchema, reject: "rejected", inner: ShellRejectedSchema, fields: shellReason },
+  shellStreamArgs: { result: "shellStream", schema: ShellStreamSchema, oneof: "event", reject: "rejected", inner: ShellRejectedSchema, fields: shellReason },
+  backgroundShellSpawnArgs: {
+    result: "backgroundShellSpawnResult", schema: BackgroundShellSpawnResultSchema, reject: "error", inner: BackgroundShellSpawnErrorSchema,
+    fields: (a, error) => ({ command: str(a.command), workingDirectory: str(a.workingDirectory), error }),
+  },
+  writeShellStdinArgs: { result: "writeShellStdinResult", schema: WriteShellStdinResultSchema, reject: "error", inner: WriteShellStdinErrorSchema, fields: (_a, error) => ({ error }) },
+  fetchArgs: { result: "fetchResult", schema: FetchResultSchema, reject: "error", inner: FetchErrorSchema, fields: (a, error) => ({ url: str(a.url), error }) },
+  recordScreenArgs: { result: "recordScreenResult", schema: RecordScreenResultSchema, reject: "failure", inner: RecordScreenFailureSchema, fields: (_a, error) => ({ error }) },
+  computerUseArgs: {
+    result: "computerUseResult", schema: ComputerUseResultSchema, reject: "error", inner: ComputerUseErrorSchema,
+    fields: (a, error) => ({ error, actionCount: Array.isArray(a.actions) ? a.actions.length : 0, durationMs: 0 }),
+  },
+  listMcpResourcesExecArgs: { result: "listMcpResourcesExecResult", schema: ListMcpResourcesExecResultSchema, reject: "rejected", inner: ListMcpResourcesRejectedSchema, fields: (_a, reason) => ({ reason }) },
+  readMcpResourceExecArgs: { result: "readMcpResourceExecResult", schema: ReadMcpResourceExecResultSchema, reject: "rejected", inner: ReadMcpResourceRejectedSchema, fields: (a, reason) => ({ uri: str(a.uri), reason }) },
+};
+
+/** Reject a Cursor-native tool exec, pointing the model at the Pi equivalent. */
+function rejectNativeTool(h: ServerHandlers, execMsgId: number, execId: string, execCase: string, args: Args): void {
+  const spec = NATIVE_REJECTS[execCase];
+  if (!spec) {
+    // Unknown exec case: throw so the server surfaces it instead of hanging.
+    h.send(
+      createClientMessage({
+        message: {
+          case: "execClientControlMessage",
+          value: create(ExecClientControlMessageSchema, {
+            message: {
+              case: "throw",
+              value: create(ExecClientThrowSchema, {
+                id: execMsgId,
+                error: `pi-cursor has no handler for Cursor exec case "${execCase}" (wire drift: agent.proto may be behind Cursor).`,
+              }),
+            },
+          }),
+        },
+      }),
+    );
+    return;
   }
+  const reason = nativeToolRejection(execCase, toolNames(h));
+  const inner = create(spec.inner, spec.fields(args, reason) as never);
+  const value = create(spec.schema, { [spec.oneof ?? "result"]: { case: spec.reject, value: inner } } as never);
+  answerExec(h, execMsgId, execId, { case: spec.result, value });
 }
 
 function handleExec(h: ServerHandlers, exec: { id: number; execId: string; message: { case: string; value: unknown } }): void {

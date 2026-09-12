@@ -355,6 +355,48 @@ describe("handleServerMessage", () => {
     expect(result.value.reason).toMatch(/MCP tool/);
   });
 
+  it("answers every native exec case with a populated rejection oneof", () => {
+    const expected: Record<string, [string, string]> = {
+      readArgs: ["readResult", "rejected"],
+      lsArgs: ["lsResult", "rejected"],
+      grepArgs: ["grepResult", "error"],
+      writeArgs: ["writeResult", "rejected"],
+      deleteArgs: ["deleteResult", "rejected"],
+      shellArgs: ["shellResult", "rejected"],
+      shellStreamArgs: ["shellStream", "rejected"],
+      backgroundShellSpawnArgs: ["backgroundShellSpawnResult", "error"],
+      writeShellStdinArgs: ["writeShellStdinResult", "error"],
+      fetchArgs: ["fetchResult", "error"],
+      diagnosticsArgs: ["diagnosticsResult", "rejected"],
+      recordScreenArgs: ["recordScreenResult", "failure"],
+      computerUseArgs: ["computerUseResult", "error"],
+      listMcpResourcesExecArgs: ["listMcpResourcesExecResult", "rejected"],
+      readMcpResourceExecArgs: ["readMcpResourceExecResult", "rejected"],
+    };
+    for (const [execCase, [resultCase, rejectCase]] of Object.entries(expected)) {
+      const h = makeHandlers();
+      handleServerMessage(
+        frame({
+          message: {
+            case: "execServerMessage",
+            value: create(ExecServerMessageSchema, {
+              id: 1,
+              execId: "x",
+              message: { case: execCase, value: create(RequestContextArgsSchema, {}) } as never,
+            }),
+          },
+        }),
+        h.handlers,
+      );
+      const exec = execReplyOf(h.sent[0]) as { case: string; value: Record<string, { case?: string; value?: Record<string, unknown> }> };
+      expect(exec.case, execCase).toBe(resultCase);
+      const oneof = exec.value[execCase === "shellStreamArgs" ? "event" : "result"];
+      expect(oneof.case, execCase).toBe(rejectCase);
+      const text = String(oneof.value?.reason ?? oneof.value?.error);
+      expect(text, execCase).toMatch(/not available in Pi/);
+    }
+  });
+
   it("throws on an unknown exec case", () => {
     const h = makeHandlers();
     handleServerMessage(
